@@ -232,7 +232,6 @@ function DualCamera({habitName,onCapture,onClose}){
   const[flash,setFlash]=useState(false);
   const[count,setCount]=useState(null);
   const[errMsg,setErrMsg]=useState("");
-  const singleFacing=useRef("environment");
 
   const stopAll=useCallback(()=>{
     const seen=new Set();
@@ -253,37 +252,56 @@ function DualCamera({habitName,onCapture,onClose}){
       const seed=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
       seed.getTracks().forEach(t=>t.stop());
       if(cancelRef.current)return;
-      // Open front + back sequentially with exact facingMode (most reliable cross-platform)
-      let frontStream=null,backStream=null;
-      try{frontStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:"user"}},audio:false});}catch{}
-      if(cancelRef.current){frontStream?.getTracks().forEach(t=>t.stop());return;}
-      try{backStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:"environment"}},audio:false});}catch{}
-      if(cancelRef.current){frontStream?.getTracks().forEach(t=>t.stop());backStream?.getTracks().forEach(t=>t.stop());return;}
-      if(frontStream&&backStream){
-        sBig.current=backStream;sPip.current=frontStream;
-        // pip video is always rendered, so pipVRef.current is valid
-        await bindV(bigVRef.current,backStream,false);
-        await bindV(pipVRef.current,frontStream,true);
+      const tryDualFacing=async()=>{
+        let fs=null,bs=null;
+        try{fs=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:"user"}},audio:false});}catch{}
+        try{bs=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:"environment"}},audio:false});}catch{}
+        return{fs,bs};
+      };
+      const tryDualDeviceIds=async()=>{
+        const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
+        const front=devs.find(d=>/front|user|facetime/i.test(d.label||""))||devs[0];
+        const back=devs.find(d=>/back|rear|environment/i.test(d.label||""))||devs.find(d=>front&&d.deviceId!==front.deviceId);
+        if(!front||!back||front.deviceId===back.deviceId)return{fs:null,bs:null};
+        let fs=null,bs=null;
+        try{fs=await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:front.deviceId}},audio:false});}catch{}
+        try{bs=await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:back.deviceId}},audio:false});}catch{}
+        return{fs,bs};
+      };
+      let fs=null,bs=null;
+      ({fs,bs}=await tryDualFacing());
+      if((!fs||!bs)&&!cancelRef.current){
+        fs?.getTracks().forEach(t=>t.stop());bs?.getTracks().forEach(t=>t.stop());
+        ({fs,bs}=await tryDualDeviceIds());
+      }
+      if(cancelRef.current){fs?.getTracks().forEach(t=>t.stop());bs?.getTracks().forEach(t=>t.stop());return;}
+      const fId=fs?.getVideoTracks?.()?.[0]?.getSettings?.()?.deviceId||"";
+      const bId=bs?.getVideoTracks?.()?.[0]?.getSettings?.()?.deviceId||"";
+      if(fs&&bs&&fId!==bId){
+        sBig.current=bs;sPip.current=fs;
+        await bindV(bigVRef.current,bs,false);
+        await bindV(pipVRef.current,fs,true);
         setIsDual(true);setMode("live");return;
       }
-      // One or both failed — single camera fallback
-      frontStream?.getTracks().forEach(t=>t.stop());
-      backStream?.getTracks().forEach(t=>t.stop());
-      if(cancelRef.current)return;
-      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});
-      if(cancelRef.current){s.getTracks().forEach(t=>t.stop());return;}
-      sBig.current=s;sPip.current=null;singleFacing.current="environment";
-      await bindV(bigVRef.current,s,false);
-      setIsDual(false);setMode("live");
+      fs?.getTracks().forEach(t=>t.stop());bs?.getTracks().forEach(t=>t.stop());
+      setIsDual(false);setMode("starting");
+      setErrMsg("Dual front+back camera is not available on this device/browser.");
     }catch(e){if(!cancelRef.current)setErrMsg(e?.message||"Camera unavailable.");}
   },[stopAll]);
 
   useEffect(()=>{initCam();return()=>{cancelRef.current=true;stopAll();};},[]);
 
   useEffect(()=>{
-    if(mode!=="live"||!isDual)return;
-    bindV(bigVRef.current,liveSwap?sPip.current:sBig.current,liveSwap);
-    bindV(pipVRef.current,liveSwap?sBig.current:sPip.current,!liveSwap);
+    if(mode!=="live")return;
+    if(isDual){
+      bindV(bigVRef.current,liveSwap?sPip.current:sBig.current,liveSwap);
+      bindV(pipVRef.current,liveSwap?sBig.current:sPip.current,!liveSwap);
+    }else{
+      // single: just flip mirror transforms
+      const v=bigVRef.current,p=pipVRef.current;
+      if(v)v.style.transform=liveSwap?"scaleX(-1)":"none";
+      if(p)p.style.transform=liveSwap?"none":"scaleX(-1)";
+    }
   },[liveSwap,isDual,mode]);
 
   const shoot=useCallback(()=>{
@@ -307,19 +325,6 @@ function DualCamera({habitName,onCapture,onClose}){
     const iv=setInterval(()=>{c--;if(c<=0){clearInterval(iv);setCount(null);shoot();}else setCount(c);},1000);
   };
 
-  const flipSingle=async()=>{
-    if(isDual||mode!=="live")return;
-    const next=singleFacing.current==="environment"?"user":"environment";
-    setMode("starting");stopAll();cancelRef.current=false;
-    try{
-      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:next}},audio:false});
-      if(cancelRef.current){s.getTracks().forEach(t=>t.stop());return;}
-      sBig.current=s;singleFacing.current=next;
-      await bindV(bigVRef.current,s,next==="user");
-      setMode("live");
-    }catch(e){setErrMsg(e?.message||"Could not switch camera.");}
-  };
-
   const confirm=()=>{
     if(!captured)return;
     const[main,pip]=capSwap?[captured.pip,captured.big]:[captured.big,captured.pip];
@@ -341,7 +346,7 @@ function DualCamera({habitName,onCapture,onClose}){
         <div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}>
           <div>{habitName}</div>
           <div style={{fontSize:10,color:"rgba(255,255,255,0.5)",marginTop:2}}>
-            {mode==="captured"?"Tap small photo to swap 👆":isDual?"🤳 Dual camera":"📷 Single camera"}
+            {mode==="captured"?"Tap small photo to swap 👆":"🤳 BeReal dual mode"}
           </div>
           {errMsg&&<div style={{fontSize:10,color:"rgba(255,120,120,0.85)",marginTop:2}}>{errMsg}</div>}
         </div>
@@ -351,10 +356,10 @@ function DualCamera({habitName,onCapture,onClose}){
       {/* Live camera preview */}
       <div className="cam-preview" style={{display:mode==="captured"?"none":undefined}}>
         <video ref={bigVRef} className="cam-back" autoPlay playsInline muted/>
-        {/* PiP always in DOM so pipVRef is always valid — hidden when not dual */}
+        {/* PiP always visible — dual=separate cam, single=same stream mirrored */}
         <div className="cam-front-pip"
-          onClick={()=>isDual&&mode==="live"&&setLiveSwap(s=>!s)}
-          style={{cursor:isDual&&mode==="live"?"pointer":"default",opacity:isDual&&mode==="live"?1:0,pointerEvents:isDual&&mode==="live"?"auto":"none"}}>
+          onClick={()=>mode==="live"&&setLiveSwap(s=>!s)}
+          style={{cursor:mode==="live"?"pointer":"default",display:mode==="starting"?"none":undefined}}>
           <video ref={pipVRef} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>
           <div style={{position:"absolute",bottom:5,right:5,background:"rgba(0,0,0,0.55)",borderRadius:99,padding:"2px 7px",fontSize:9,color:"#fff"}}>tap to swap</div>
         </div>
@@ -389,10 +394,7 @@ function DualCamera({habitName,onCapture,onClose}){
           <>
             <button className="cam-side-btn" onClick={startCountdown} disabled={mode!=="live"}>⏱</button>
             <button className="cam-shutter" onClick={shoot} disabled={mode!=="live"} style={{opacity:mode!=="live"?0.5:1}}/>
-            {!isDual
-              ?<button className="cam-side-btn" onClick={flipSingle} disabled={mode!=="live"}>🔄</button>
-              :<div style={{width:48}}/>
-            }
+            {isDual?<div style={{width:48}}/>:<div style={{width:48}}/>}
           </>
         )}
       </div>
