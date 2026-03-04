@@ -3,6 +3,29 @@ import { useState, useRef, useEffect, useCallback } from "react";
 // ── Storage ───────────────────────────────────────────────────
 async function dbGet(key) { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; } }
 async function dbSet(key,val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
+async function fileToDataUrlCompressed(file,maxSize=512,quality=0.8){
+  return new Promise((resolve,reject)=>{
+    const fr=new FileReader();
+    fr.onerror=()=>reject(new Error("file read failed"));
+    fr.onload=()=>{
+      const img=new Image();
+      img.onerror=()=>reject(new Error("image decode failed"));
+      img.onload=()=>{
+        const scale=Math.min(1,maxSize/Math.max(img.width,img.height));
+        const w=Math.max(1,Math.round(img.width*scale));
+        const h=Math.max(1,Math.round(img.height*scale));
+        const c=document.createElement("canvas");
+        c.width=w;c.height=h;
+        const ctx=c.getContext("2d");
+        if(!ctx){reject(new Error("canvas failed"));return;}
+        ctx.drawImage(img,0,0,w,h);
+        resolve(c.toDataURL("image/jpeg",quality));
+      };
+      img.src=String(fr.result||"");
+    };
+    fr.readAsDataURL(file);
+  });
+}
 
 // ── Constants ─────────────────────────────────────────────────
 const UNSPLASH = [
@@ -197,38 +220,75 @@ function SnapAlert({challenge,onDone,onSnap}){
 // ── Dual Camera ───────────────────────────────────────────────
 function DualCamera({habitName,onCapture,onClose}){
   const bvr=useRef(),fvr=useRef(),bcv=useRef(),fcv=useRef(),bst=useRef(),fst=useRef();
-  const[ready,setReady]=useState(false);const[err,setErr]=useState(false);const[swapped,setSwapped]=useState(false);const[count,setCount]=useState(null);const[flash,setFlash]=useState(false);const[dual,setDual]=useState(false);
+  const[ready,setReady]=useState(false);const[err,setErr]=useState(false);const[swapped,setSwapped]=useState(false);const[count,setCount]=useState(null);const[flash,setFlash]=useState(false);const[dual,setDual]=useState(false);const[singleFacing,setSingleFacing]=useState("environment");
+  const[singleDeviceIds,setSingleDeviceIds]=useState([]);const[activeSingleDevice,setActiveSingleDevice]=useState(null);
+  const stopAll=()=>{
+    const streams=[bst.current,fst.current].filter(Boolean);
+    const seen=new Set();
+    streams.forEach(s=>s.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}}));
+    bst.current=null;fst.current=null;
+  };
+  const bindVideo=async(video,stream)=>{
+    if(!video||!stream)return;
+    if(video.srcObject!==stream)video.srcObject=stream;
+    await video.play().catch(()=>{});
+  };
+  const openSingle=async(facing)=>{
+    stopAll();
+    const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing},audio:false});
+    bst.current=s;fst.current=s;
+    setDual(false);
+    setSingleFacing(facing);
+    const tid=s.getVideoTracks?.()?.[0]?.getSettings?.()?.deviceId||null;
+    if(tid)setActiveSingleDevice(tid);
+    await bindVideo(bvr.current,s);
+    await bindVideo(fvr.current,s);
+    setReady(true);
+  };
+  const openSingleByDeviceId=async(deviceId)=>{
+    stopAll();
+    const s=await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:deviceId}},audio:false});
+    bst.current=s;fst.current=s;
+    setDual(false);
+    setActiveSingleDevice(deviceId);
+    const label=s.getVideoTracks?.()?.[0]?.label?.toLowerCase?.()||"";
+    if(/front|user|facetime/.test(label))setSingleFacing("user");else if(/back|rear|environment/.test(label))setSingleFacing("environment");
+    await bindVideo(bvr.current,s);
+    await bindVideo(fvr.current,s);
+    setReady(true);
+  };
   useEffect(()=>{
     let active=true;
-    const stopAll=()=>{
-      const streams=[bst.current,fst.current].filter(Boolean);
-      const seen=new Set();
-      streams.forEach(s=>s.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}}));
-    };
     (async()=>{
       try{
         if(!navigator.mediaDevices?.getUserMedia)throw new Error("mediaDevices unavailable");
         const seed=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
         seed.getTracks().forEach(t=>t.stop());
-        const devices=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
+        const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
         const isFront=d=>/front|user|facetime/i.test(d.label||"");
         const isBack=d=>/back|rear|environment/i.test(d.label||"");
-        const frontDev=devices.find(isFront)||devices[0]||null;
-        const backDev=devices.find(isBack)||devices.find(d=>frontDev&&d.deviceId!==frontDev.deviceId)||null;
-        const openStream=async(pref,dev)=>{
-          if(dev?.deviceId){
-            try{return await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:dev.deviceId}},audio:false});}catch{}
-          }
-          try{return await navigator.mediaDevices.getUserMedia({video:{facingMode:pref},audio:false});}catch{return null;}
-        };
-        const fs=await openStream("user",frontDev);
-        if(!fs)throw new Error("front camera unavailable");
-        let bs=await openStream("environment",backDev);
-        if(!bs)bs=fs;
-        if(!active){fs.getTracks().forEach(t=>t.stop());if(bs!==fs)bs.getTracks().forEach(t=>t.stop());return;}
-        bst.current=bs;fst.current=fs;
-        setDual(bs!==fs);
-        setReady(true);
+        const frontDev=devs.find(isFront)||devs[0]||null;
+        const backDev=devs.find(isBack)||devs.find(d=>frontDev&&d.deviceId!==frontDev.deviceId)||null;
+        const fromDev=dev=>navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:dev.deviceId}},audio:false});
+        let front=null,back=null;
+        if(frontDev&&backDev&&frontDev.deviceId!==backDev.deviceId){
+          try{front=await fromDev(frontDev);}catch{}
+          try{back=await fromDev(backDev);}catch{}
+        }
+        if(!active){front?.getTracks().forEach(t=>t.stop());back?.getTracks().forEach(t=>t.stop());return;}
+        setSingleDeviceIds(devs.map(d=>d.deviceId).filter(Boolean));
+        if(front&&back){
+          bst.current=back;fst.current=front;
+          setDual(true);setSingleFacing("environment");
+          await bindVideo(bvr.current,back);
+          await bindVideo(fvr.current,front);
+          setReady(true);
+          return;
+        }
+        front?.getTracks().forEach(t=>t.stop());
+        back?.getTracks().forEach(t=>t.stop());
+        if(backDev?.deviceId)await openSingleByDeviceId(backDev.deviceId).catch(async()=>openSingle("environment").catch(()=>openSingle("user")));
+        else await openSingle("environment").catch(()=>openSingle("user"));
       }catch{
         setErr(true);
       }
@@ -237,10 +297,30 @@ function DualCamera({habitName,onCapture,onClose}){
   },[]);
   useEffect(()=>{
     if(!ready)return;
-    const bind=async(v,s)=>{if(v&&s&&v.srcObject!==s){v.srcObject=s;await v.play().catch(()=>{});}};
-    bind(bvr.current,bst.current);
-    bind(fvr.current,fst.current);
-  },[ready,swapped]);
+    if(dual){
+      const big=swapped?fst.current:bst.current;
+      const pip=swapped?bst.current:fst.current;
+      bindVideo(bvr.current,big);
+      bindVideo(fvr.current,pip);
+    }
+  },[ready,dual,swapped]);
+  async function toggleSwap(){
+    if(dual){setSwapped(s=>!s);return;}
+    try{
+      setReady(false);
+      if(singleDeviceIds.length>1&&activeSingleDevice){
+        const idx=singleDeviceIds.indexOf(activeSingleDevice);
+        const nextId=singleDeviceIds[(idx+1)%singleDeviceIds.length];
+        await openSingleByDeviceId(nextId);
+      }else{
+        const next=singleFacing==="environment"?"user":"environment";
+        await openSingle(next);
+      }
+      setErr(false);
+    }catch{
+      setErr(true);
+    }
+  }
   function shoot(){
     setFlash(true);setTimeout(()=>setFlash(false),200);let b,f;
     const cap=(v,c)=>{
@@ -258,11 +338,11 @@ function DualCamera({habitName,onCapture,onClose}){
     if(!f&&b)f=b;
     const streams=[bst.current,fst.current].filter(Boolean);
     const seen=new Set();
-    streams.forEach(s=>s.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}}));
+    streams.forEach(s=>s.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}}));bst.current=null;fst.current=null;
     onCapture(b,f);
   }
   function startCountdown(){let c=3;setCount(c);const iv=setInterval(()=>{c--;if(c<=0){clearInterval(iv);setCount(null);shoot();}else setCount(c);},1000);}
-  return(<div className="camera-modal">{flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}{count&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}<div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}><button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button><div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}><div>{habitName}</div>{err&&<div style={{fontSize:10,color:"rgba(255,120,120,0.8)",marginTop:2}}>camera not available</div>}{ready&&!err&&!dual&&<div style={{fontSize:10,color:"rgba(255,255,255,0.6)",marginTop:2}}>single camera mode</div>}</div><div style={{width:60}}/></div><div className="cam-preview">{!swapped?<video ref={bvr} className="cam-back" autoPlay playsInline muted/>:<video ref={fvr} className="cam-back" autoPlay playsInline muted style={{transform:"scaleX(-1)"}}/>}<div className="cam-front-pip" onClick={()=>setSwapped(s=>!s)}>{!swapped?<video ref={fvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover",transform:"scaleX(-1)"}}/>:<video ref={bvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>}</div>{!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.7)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras...</div></div>}</div><canvas ref={bcv} style={{display:"none"}}/><canvas ref={fcv} style={{display:"none"}}/><div className="cam-controls"><button className="cam-side-btn" onClick={startCountdown}>⏱</button><button className="cam-shutter" onClick={shoot} disabled={!ready||err} style={{opacity:(!ready||err)?0.5:1}}/><button className="cam-side-btn" onClick={()=>setSwapped(s=>!s)} title="Bytt stor/liten">🔄</button></div></div>);
+  return(<div className="camera-modal">{flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}{count&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}<div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}><button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button><div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}><div>{habitName}</div>{err&&<div style={{fontSize:10,color:"rgba(255,120,120,0.8)",marginTop:2}}>camera not available</div>}{ready&&!err&&!dual&&<div style={{fontSize:10,color:"rgba(255,255,255,0.6)",marginTop:2}}>single camera mode</div>}</div><div style={{width:60}}/></div><div className="cam-preview"><video ref={bvr} className="cam-back" autoPlay playsInline muted style={{transform:(!dual&&singleFacing==="user")||(dual&&swapped)?"scaleX(-1)":"none"}}/><div className="cam-front-pip" onClick={toggleSwap}><video ref={fvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover",transform:(!dual&&singleFacing==="user")||(!swapped&&dual)?"scaleX(-1)":"none"}}/></div>{!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.7)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras...</div></div>}</div><canvas ref={bcv} style={{display:"none"}}/><canvas ref={fcv} style={{display:"none"}}/><div className="cam-controls"><button className="cam-side-btn" onClick={startCountdown}>⏱</button><button className="cam-shutter" onClick={shoot} disabled={!ready||err} style={{opacity:(!ready||err)?0.5:1}}/><button className="cam-side-btn" onClick={toggleSwap} title="Bytt stor/liten">🔄</button></div></div>);
 }
 
 function DualPhoto({backPhoto,frontPhoto,lateMin,onClick}){return(<div className="dual-photo" onClick={onClick} style={{cursor:onClick?"pointer":"default"}}><img className="dual-back" src={backPhoto} alt=""/><div className="dual-front"><img src={frontPhoto} alt=""/></div>{lateMin>0&&<div className="late-badge">Posted {lateMin} min late</div>}</div>);}
@@ -299,31 +379,53 @@ function HabitProgressChart({habits,habitHistory,selectedId}){
   const series=activeHabits.map((h,i)=>({
     id:String(h.id),
     name:h.name,
+    icon:h.icon,
     color:CHART_COLORS[i%CHART_COLORS.length],
-    points:(habitHistory[String(h.id)]||[]).map(p=>({x:new Date(p.ts).getTime(),y:Math.max(0,p.streak||0)})).filter(p=>Number.isFinite(p.x)).sort((a,b)=>a.x-b.x),
+    points:(habitHistory[String(h.id)]||[]).map(p=>({x:new Date(p.ts).getTime(),y:Math.max(0,p.streak||0),done:!!p.done})).filter(p=>Number.isFinite(p.x)).sort((a,b)=>a.x-b.x),
   })).filter(s=>s.points.length>0);
-  if(series.length===0)return(<div className="glass" style={{borderRadius:20,padding:"26px 18px",textAlign:"center"}}><div style={{fontSize:38,marginBottom:10}}>📉</div><p style={{fontSize:13,color:"rgba(255,255,255,0.3)"}}>Ingen historikk enda. Fullfor en rutine for a se utvikling.</p></div>);
+  if(series.length===0)return(<div className="glass" style={{borderRadius:20,padding:"26px 18px",textAlign:"center"}}><div style={{fontSize:38,marginBottom:10}}>📉</div><p style={{fontSize:13,color:"rgba(255,255,255,0.3)"}}>Ingen historikk enda. Fullfør en rutine for å se utvikling.</p></div>);
   const allPts=series.flatMap(s=>s.points);
   const minX=Math.min(...allPts.map(p=>p.x));const maxX=Math.max(...allPts.map(p=>p.x));
   const maxY=Math.max(1,...allPts.map(p=>p.y));
-  const W=350,H=180,P=20;
-  const scaleX=x=>P+((x-minX)/(Math.max(1,maxX-minX)))*(W-P*2);
-  const scaleY=y=>H-P-(y/maxY)*(H-P*2);
+  const W=340,H=190,PX=32,PY=20;
+  const scaleX=x=>PX+((x-minX)/(Math.max(1,maxX-minX)))*(W-PX-12);
+  const scaleY=y=>H-PY-(y/maxY)*(H-PY*2);
+  const fmt=ts=>new Date(ts).toLocaleDateString("no",{day:"numeric",month:"short"});
   return(
     <div className="glass" style={{borderRadius:20,padding:"16px 14px"}}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:190,display:"block"}}>
-        {[0,0.25,0.5,0.75,1].map(t=>(<line key={t} x1={P} y1={P+t*(H-P*2)} x2={W-P} y2={P+t*(H-P*2)} stroke="rgba(255,255,255,0.08)" strokeWidth="1"/>))}
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:200,display:"block"}}>
+        {[0,0.25,0.5,0.75,1].map(t=>(
+          <g key={t}>
+            <line x1={PX} y1={PY+t*(H-PY*2)} x2={W-8} y2={PY+t*(H-PY*2)} stroke="rgba(255,255,255,0.07)" strokeWidth="1"/>
+            <text x={PX-4} y={PY+t*(H-PY*2)+3} fill="rgba(255,255,255,0.25)" fontSize="8" textAnchor="end">{Math.round(maxY*(1-t))}</text>
+          </g>
+        ))}
         {series.map(s=>{
-          const d=s.points.map((p,idx)=>`${idx===0?"M":"L"} ${scaleX(p.x)} ${scaleY(p.y)}`).join(" ");
-          return <path key={s.id} d={d} fill="none" stroke={s.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>;
+          if(s.points.length===1)return <circle key={s.id} cx={scaleX(s.points[0].x)} cy={scaleY(s.points[0].y)} r="5" fill={s.color}/>;
+          const lineD=s.points.map((p,i)=>`${i===0?"M":"L"} ${scaleX(p.x)} ${scaleY(p.y)}`).join(" ");
+          const areaD=`${lineD} L ${scaleX(s.points[s.points.length-1].x)} ${H-PY} L ${scaleX(s.points[0].x)} ${H-PY} Z`;
+          return(
+            <g key={s.id}>
+              <path d={areaD} fill={s.color} opacity="0.1"/>
+              <path d={lineD} fill="none" stroke={s.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+              {s.points.map((p,i)=>(
+                <circle key={i} cx={scaleX(p.x)} cy={scaleY(p.y)} r={p.done?3.5:2} fill={p.done?s.color:"#0a0a0f"} stroke={s.color} strokeWidth={p.done?0:1.5}/>
+              ))}
+            </g>
+          );
         })}
       </svg>
-      <div style={{display:"flex",justifyContent:"space-between",marginTop:2,fontSize:10,color:"rgba(255,255,255,0.3)"}}>
-        <span>{new Date(minX).toLocaleDateString()}</span>
-        <span>{new Date(maxX).toLocaleDateString()}</span>
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:4,fontSize:10,color:"rgba(255,255,255,0.25)",paddingLeft:PX}}>
+        <span>{fmt(minX)}</span>
+        <span>{fmt(maxX)}</span>
       </div>
-      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:12}}>
-        {series.map(s=><div key={s.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:"rgba(255,255,255,0.6)"}}><span style={{width:10,height:10,borderRadius:99,background:s.color,display:"inline-block"}}/>{s.name}</div>)}
+      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:14}}>
+        {series.map(s=>(
+          <div key={s.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:"rgba(255,255,255,0.6)"}}>
+            <span style={{width:10,height:10,borderRadius:99,background:s.color,display:"inline-block",flexShrink:0}}/>
+            {s.icon} {s.name}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -343,6 +445,8 @@ export default function App(){
   const[goggins,setGoggins]=useState(null);const[gogginsKey,setGogginsKey]=useState(0);const[ramsay,setRamsay]=useState(null);const[bitchMsg,setBitchMsg]=useState(null);const[shameToast,setShameToast]=useState(null);const[toast,setToast]=useState(null);
   const[quoteIdx]=useState(()=>Math.floor(Math.random()*QUOTES.length));
   const profileInputRef=useRef(null);
+  const[showAvatarMenu,setShowAvatarMenu]=useState(false);
+  const[profileCameraOpen,setProfileCameraOpen]=useState(false);
   const gogginsTimer=useRef(null);const ramsayTimer=useRef(null);const snapTimer=useRef(null);
   const habitsRef=useRef([]);const coachVisibleRef=useRef(null);
 
@@ -354,6 +458,24 @@ export default function App(){
     const exists=habits.some(h=>String(h.id)===String(selectedTrendHabit));
     if(!exists)setSelectedTrendHabit("all");
   },[habits,selectedTrendHabit]);
+  useEffect(()=>{
+    if(!user||Object.keys(habitHistory||{}).length>0)return;
+    const seeded={};
+    const base=user.username.split("").reduce((s,c)=>s+c.charCodeAt(0),0);
+    for(const h of habits){
+      const pts=[];
+      for(let i=13;i>=0;i--){
+        const d=new Date();d.setDate(d.getDate()-i);
+        const wasDone=((base+Number(h.id)+i)%4)!==0;
+        const s=Math.max(0,(h.streak||0)-Math.floor(i/2));
+        pts.push({ts:d.toISOString(),streak:s,done:wasDone});
+      }
+      seeded[String(h.id)]=pts;
+    }
+    setHabitHistory(seeded);
+    saveUser({habitHistory:seeded});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[user]);
 
   async function loadFriends(u){const fds=[];for(const fn of(u.friends||[])){const demo=DEMO_USERS.find(d=>d.username===fn);if(demo){fds.push({...demo,shamed:false});continue;}const fd=await dbGet(`user:${fn}`);if(fd)fds.push({...fd,shamed:false});}setFriendData(fds);}
 
@@ -482,14 +604,14 @@ export default function App(){
   async function updateAvatar(file){
     if(!file)return;
     if(!file.type.startsWith("image/")){setToast("Please choose an image file.");return;}
-    const reader=new FileReader();
-    reader.onload=async()=>{
-      const avatar=String(reader.result||"");
+    try{
+      const avatar=await fileToDataUrlCompressed(file,640,0.82);
       if(!avatar)return;
       await saveUser({avatar});
       setToast("Profile picture updated.");
-    };
-    reader.readAsDataURL(file);
+    }catch{
+      setToast("Could not update profile picture.");
+    }
   }
   async function logout(){await dbSet("session",null);clearTimeout(gogginsTimer.current);clearTimeout(ramsayTimer.current);clearTimeout(snapTimer.current);setUser(null);setHabits([]);setMyPosts([]);setFriendData([]);setHabitHistory({});setSelectedTrendHabit("all");}
 
@@ -516,6 +638,26 @@ export default function App(){
       {cameraFor&&!snapFor&&<DualCamera habitName={habits.find(h=>h.id===cameraFor)?.name||""} onCapture={(b,f)=>handleCapture(b,f,false)} onClose={()=>setCameraFor(null)}/>}
       {showAddFriend&&<AddFriendModal currentUser={user} onAdd={addFriend} onClose={()=>setShowAddFriend(false)}/>}
       {commentPost&&<CommentSheet post={commentPost} currentUser={user} onClose={()=>setCommentPost(null)} onAdd={addComment}/>}
+      {profileCameraOpen&&<DualCamera habitName="Profilbilde" onCapture={async(back,front)=>{setProfileCameraOpen(false);const av=front||back;if(av){await saveUser({avatar:av});setToast("Profilbilde oppdatert! 📸");}}} onClose={()=>setProfileCameraOpen(false)}/>}
+      {showAvatarMenu&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:500,backdropFilter:"blur(12px)"}} onClick={e=>{if(e.target===e.currentTarget)setShowAvatarMenu(false);}}>
+          <div style={{background:"#141420",border:"1px solid rgba(255,255,255,0.08)",borderRadius:"28px 28px 0 0",padding:"28px 24px 44px",width:"100%",maxWidth:430}} className="fade-in">
+            <div style={{width:36,height:4,background:"rgba(255,255,255,0.12)",borderRadius:99,margin:"0 auto 24px"}}/>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:24}}>
+              <img src={user.avatar} style={{width:82,height:82,borderRadius:"50%",objectFit:"cover",border:"3px solid rgba(124,111,255,0.5)",marginBottom:10}} alt=""/>
+              <div style={{fontSize:16,fontWeight:800}}>{user.displayName}</div>
+              <div style={{fontSize:12,color:"rgba(255,255,255,0.3)",marginTop:2}}>@{user.username}</div>
+            </div>
+            <button onClick={()=>{setShowAvatarMenu(false);setTimeout(()=>profileInputRef.current?.click(),100);}} style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:14,padding:15,color:"#fff",fontSize:14,fontWeight:600,fontFamily:F,cursor:"pointer",marginBottom:10,display:"flex",alignItems:"center",gap:12,justifyContent:"center"}}>
+              🖼️ Add profile picture
+            </button>
+            <button onClick={()=>{setShowAvatarMenu(false);setProfileCameraOpen(true);}} style={{width:"100%",background:ACCENT,border:"none",borderRadius:14,padding:15,color:"#fff",fontSize:14,fontWeight:700,fontFamily:F,cursor:"pointer",marginBottom:10,boxShadow:"0 4px 20px rgba(124,111,255,0.35)",display:"flex",alignItems:"center",gap:12,justifyContent:"center"}}>
+              📷 Take now
+            </button>
+            <button onClick={()=>setShowAvatarMenu(false)} style={{width:"100%",background:"none",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:13,color:"rgba(255,255,255,0.3)",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       <div className="app">
         {/* HEADER */}
@@ -524,10 +666,10 @@ export default function App(){
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
             <div><p style={{fontSize:11,letterSpacing:2,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:4}}>{today}</p><h1 style={{fontSize:28,fontWeight:900,letterSpacing:-1,background:ACCENT,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>HabitSnap</h1></div>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
-              <button onClick={()=>profileInputRef.current?.click()} style={{background:"none",border:"none",padding:0,cursor:"pointer"}}>
-                <img src={user.avatar} title="Change profile photo" style={{width:40,height:40,borderRadius:"50%",objectFit:"cover",border:"2px solid rgba(124,111,255,0.4)",display:"block"}} alt=""/>
+              <button onClick={()=>setShowAvatarMenu(true)} style={{background:"none",border:"none",padding:0,cursor:"pointer",position:"relative"}}>
+                <img src={user.avatar} title="Change profile photo" style={{width:44,height:44,borderRadius:"50%",objectFit:"cover",border:"2px solid rgba(124,111,255,0.4)",display:"block"}} alt=""/>
+                <div style={{position:"absolute",bottom:-1,right:-1,width:18,height:18,borderRadius:"50%",background:"linear-gradient(135deg,#7c6fff,#c471ed)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,border:"2px solid #0a0a0f"}}>📷</div>
               </button>
-              <button onClick={()=>profileInputRef.current?.click()} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,padding:"6px 10px",color:"rgba(255,255,255,0.55)",fontSize:11,fontFamily:F,cursor:"pointer"}}>Photo</button>
               <button onClick={logout} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,padding:"6px 12px",color:"rgba(255,255,255,0.3)",fontSize:12,fontFamily:F,cursor:"pointer"}}>Out</button>
             </div>
           </div>
@@ -540,7 +682,7 @@ export default function App(){
 
         {/* TABS */}
         <div style={{display:"flex",padding:"0 16px",marginBottom:4,gap:3,overflowX:"auto"}}>
-          {[["habits","Habits"],["feed","Feed"],["friends","Friends 👥"],["leaderboard","🏆"],["utvikling","Utvikling 📈"],["graveyard","⚰️ Graveyard"]].map(([k,l])=>(
+          {[["habits","Habits"],["feed","Feed"],["friends","Friends 👥"],["leaderboard","🏆"],["analyse","Analyse 📈"],["graveyard","⚰️ Graveyard"]].map(([k,l])=>(
             <button key={k} onClick={()=>setTab(k)} style={{flexShrink:0,minWidth:98,padding:"10px 12px",background:tab===k?"rgba(124,111,255,0.15)":"none",border:tab===k?"1px solid rgba(124,111,255,0.3)":"1px solid transparent",borderRadius:12,color:tab===k?"#a78bfa":"rgba(255,255,255,0.3)",fontSize:12,fontWeight:tab===k?700:400,fontFamily:F,cursor:"pointer",textAlign:"center"}}>{l}</button>
           ))}
         </div>
@@ -663,11 +805,24 @@ export default function App(){
           </div>
         )}
 
-        {/* UTVIKLING */}
-        {tab==="utvikling"&&(
+        {/* ANALYSE */}
+        {tab==="analyse"&&(
           <div style={{padding:"16px 22px"}} className="fade-in">
-            <h2 style={{fontSize:22,fontWeight:900,letterSpacing:-0.5,marginBottom:4}}>Utvikling 📈</h2>
+            <h2 style={{fontSize:22,fontWeight:900,letterSpacing:-0.5,marginBottom:4}}>Analyse 📈</h2>
             <p style={{fontSize:12,color:"rgba(255,255,255,0.25)",marginBottom:16,fontStyle:"italic"}}>Streak-utvikling over tid for rutinene dine.</p>
+            <div style={{display:"flex",gap:10,marginBottom:16}}>
+              {[
+                {label:"Habits",value:habits.length,icon:"📋"},
+                {label:"Best streak",value:Math.max(0,...habits.map(h=>h.best||0))+"d",icon:"🏆"},
+                {label:"Done today",value:`${habits.filter(h=>h.done).length}/${habits.length}`,icon:"✅"},
+              ].map(s=>(
+                <div key={s.label} className="glass" style={{flex:1,borderRadius:16,padding:"14px 10px",textAlign:"center"}}>
+                  <div style={{fontSize:20}}>{s.icon}</div>
+                  <div style={{fontSize:18,fontWeight:900,marginTop:4}}>{s.value}</div>
+                  <div style={{fontSize:10,color:"rgba(255,255,255,0.3)",marginTop:2}}>{s.label}</div>
+                </div>
+              ))}
+            </div>
             <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:8,marginBottom:12}}>
               <button onClick={()=>setSelectedTrendHabit("all")} style={{flexShrink:0,padding:"8px 12px",borderRadius:12,border:`1px solid ${selectedTrendHabit==="all"?"rgba(124,111,255,0.5)":"rgba(255,255,255,0.1)"}`,background:selectedTrendHabit==="all"?"rgba(124,111,255,0.15)":"rgba(255,255,255,0.04)",color:selectedTrendHabit==="all"?"#a78bfa":"rgba(255,255,255,0.45)",fontSize:12,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Alle</button>
               {habits.map(h=>(
