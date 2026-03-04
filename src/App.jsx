@@ -219,76 +219,180 @@ function SnapAlert({challenge,onDone,onSnap}){
 
 // ── Dual Camera ───────────────────────────────────────────────
 function DualCamera({habitName,onCapture,onClose}){
-  const vRef=useRef();const cvRef=useRef();const streamRef=useRef(null);
-  const[ready,setReady]=useState(false);const[err,setErr]=useState(null);
-  const[facing,setFacing]=useState("environment");const[busy,setBusy]=useState(false);
-  const[count,setCount]=useState(null);const[flash,setFlash]=useState(false);
+  const bigVRef=useRef(),pipVRef=useRef();
+  const bigCvRef=useRef(),pipCvRef=useRef();
+  const sBig=useRef(null),sPip=useRef(null);
+  const cancelRef=useRef(false);
 
-  const stopStream=useCallback(()=>{streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null;},[]);
+  const[mode,setMode]=useState("starting"); // starting|live|captured
+  const[isDual,setIsDual]=useState(false);
+  const[liveSwap,setLiveSwap]=useState(false);
+  const[captured,setCaptured]=useState(null);
+  const[capSwap,setCapSwap]=useState(false);
+  const[flash,setFlash]=useState(false);
+  const[count,setCount]=useState(null);
+  const[errMsg,setErrMsg]=useState("");
+  const singleFacing=useRef("environment");
 
-  const startCam=useCallback(async(facingMode)=>{
-    stopStream();setReady(false);setErr(null);
-    try{
-      if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera not supported in this browser.");
-      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facingMode}},audio:false});
-      streamRef.current=s;
-      const v=vRef.current;
-      if(v){v.srcObject=s;v.onloadedmetadata=()=>v.play().catch(()=>{});}
-      setFacing(facingMode);setReady(true);
-    }catch(e){setErr(e?.message||"Could not access camera.");}
-  },[stopStream]);
+  const stopAll=useCallback(()=>{
+    const seen=new Set();
+    [sBig,sPip].forEach(r=>{if(r.current){r.current.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}});r.current=null;}});
+  },[]);
 
-  useEffect(()=>{startCam("environment");return stopStream;},[]);
-
-  const flip=async()=>{
-    if(busy)return;setBusy(true);
-    await startCam(facing==="environment"?"user":"environment");
-    setBusy(false);
+  const bindV=(vEl,stream,mirror)=>{
+    if(!vEl||!stream)return Promise.resolve();
+    vEl.srcObject=stream;vEl.style.transform=mirror?"scaleX(-1)":"none";
+    return new Promise(res=>{const go=()=>vEl.play().then(res).catch(res);if(vEl.readyState>=1)go();else vEl.onloadedmetadata=go;});
   };
 
-  const capture=useCallback(()=>{
-    const v=vRef.current;const c=cvRef.current;
-    if(!v||!c||!ready||v.readyState<2)return;
+  const initCam=useCallback(async()=>{
+    cancelRef.current=false;stopAll();setMode("starting");setLiveSwap(false);setErrMsg("");
+    try{
+      if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera not supported.");
+      const seed=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+      seed.getTracks().forEach(t=>t.stop());
+      if(cancelRef.current)return;
+      const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
+      const fDev=devs.find(d=>/front|user|facetime/i.test(d.label||""))||null;
+      const bDev=devs.find(d=>/back|rear|environment/i.test(d.label||""))||devs.find(d=>d.deviceId!==fDev?.deviceId)||null;
+      if(fDev&&bDev&&fDev.deviceId!==bDev.deviceId){
+        try{
+          const[fs,bs]=await Promise.all([
+            navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:fDev.deviceId}},audio:false}),
+            navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:bDev.deviceId}},audio:false}),
+          ]);
+          if(cancelRef.current){fs.getTracks().forEach(t=>t.stop());bs.getTracks().forEach(t=>t.stop());return;}
+          sBig.current=bs;sPip.current=fs;
+          await bindV(bigVRef.current,bs,false);
+          await bindV(pipVRef.current,fs,true);
+          setIsDual(true);setMode("live");return;
+        }catch{}
+      }
+      if(cancelRef.current)return;
+      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});
+      if(cancelRef.current){s.getTracks().forEach(t=>t.stop());return;}
+      sBig.current=s;sPip.current=null;singleFacing.current="environment";
+      await bindV(bigVRef.current,s,false);
+      setIsDual(false);setMode("live");
+    }catch(e){if(!cancelRef.current)setErrMsg(e?.message||"Camera unavailable.");}
+  },[stopAll]);
+
+  useEffect(()=>{initCam();return()=>{cancelRef.current=true;stopAll();};},[]);
+
+  useEffect(()=>{
+    if(mode!=="live"||!isDual)return;
+    bindV(bigVRef.current,liveSwap?sPip.current:sBig.current,liveSwap);
+    bindV(pipVRef.current,liveSwap?sBig.current:sPip.current,!liveSwap);
+  },[liveSwap,isDual,mode]);
+
+  const shoot=useCallback(()=>{
+    const cap=(vEl,cvEl)=>{
+      if(!vEl||!cvEl||vEl.readyState<2||vEl.videoWidth<=0)return null;
+      const w=vEl.videoWidth,h=vEl.videoHeight;
+      cvEl.width=w;cvEl.height=h;
+      const ctx=cvEl.getContext("2d");if(!ctx)return null;
+      ctx.drawImage(vEl,0,0,w,h);return cvEl.toDataURL("image/jpeg",.85);
+    };
     setFlash(true);setTimeout(()=>setFlash(false),180);
-    const w=v.videoWidth||640;const h=v.videoHeight||480;
-    c.width=w;c.height=h;
-    const ctx=c.getContext("2d");if(!ctx)return;
-    if(facing==="user"){ctx.save();ctx.scale(-1,1);ctx.drawImage(v,-w,0,w,h);ctx.restore();}
-    else ctx.drawImage(v,0,0,w,h);
-    const photo=c.toDataURL("image/jpeg",0.85);
-    stopStream();
-    onCapture(photo,photo);
-  },[ready,facing,stopStream,onCapture]);
+    let bigImg=cap(bigVRef.current,bigCvRef.current);
+    let pipImg=cap(pipVRef.current,pipCvRef.current);
+    if(!bigImg&&!pipImg){setErrMsg("Capture failed — tap Try again.");return;}
+    if(!bigImg)bigImg=pipImg;if(!pipImg)pipImg=bigImg;
+    stopAll();setCaptured({big:bigImg,pip:pipImg});setCapSwap(false);setMode("captured");
+  },[stopAll]);
 
   const startCountdown=()=>{
-    if(!ready)return;
-    let c=3;setCount(c);
-    const iv=setInterval(()=>{c--;if(c<=0){clearInterval(iv);setCount(null);capture();}else setCount(c);},1000);
+    if(mode!=="live")return;let c=3;setCount(c);
+    const iv=setInterval(()=>{c--;if(c<=0){clearInterval(iv);setCount(null);shoot();}else setCount(c);},1000);
   };
+
+  const flipSingle=async()=>{
+    if(isDual||mode!=="live")return;
+    const next=singleFacing.current==="environment"?"user":"environment";
+    setMode("starting");stopAll();cancelRef.current=false;
+    try{
+      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:next}},audio:false});
+      if(cancelRef.current){s.getTracks().forEach(t=>t.stop());return;}
+      sBig.current=s;singleFacing.current=next;
+      await bindV(bigVRef.current,s,next==="user");
+      setMode("live");
+    }catch(e){setErrMsg(e?.message||"Could not switch camera.");}
+  };
+
+  const confirm=()=>{
+    if(!captured)return;
+    const[main,pip]=capSwap?[captured.pip,captured.big]:[captured.big,captured.pip];
+    onCapture(main,pip);
+  };
+
+  const capBig=captured?(capSwap?captured.pip:captured.big):null;
+  const capPip=captured?(capSwap?captured.big:captured.pip):null;
 
   return(
     <div className="camera-modal">
       {flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}
       {count!=null&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}
+
       <div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}>
-        <button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button>
+        <button onClick={mode==="captured"?()=>{setCaptured(null);initCam();}:onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>
+          {mode==="captured"?"↩ Retake":"Cancel"}
+        </button>
         <div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}>
           <div>{habitName}</div>
-          <div style={{fontSize:10,color:"rgba(255,255,255,0.5)",marginTop:2}}>{facing==="user"?"Front camera 🤳":"Back camera 📷"}</div>
-          {err&&<div style={{fontSize:10,color:"rgba(255,120,120,0.85)",marginTop:2}}>{err}</div>}
+          <div style={{fontSize:10,color:"rgba(255,255,255,0.5)",marginTop:2}}>
+            {mode==="captured"?"Tap small photo to swap 👆":isDual?"🤳 Dual camera":"📷 Single camera"}
+          </div>
+          {errMsg&&<div style={{fontSize:10,color:"rgba(255,120,120,0.85)",marginTop:2}}>{errMsg}</div>}
         </div>
-        <div style={{width:60}}/>
+        <div style={{width:80}}/>
       </div>
-      <div className="cam-preview">
-        <video ref={vRef} className="cam-back" autoPlay playsInline muted style={{transform:facing==="user"?"scaleX(-1)":"none"}}/>
-        {!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.8)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting camera…</div></div>}
-        {err&&<div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.85)",gap:12}}><div style={{fontSize:40}}>📷</div><div style={{fontSize:13,color:"rgba(255,120,120,0.9)",textAlign:"center",padding:"0 24px"}}>{err}</div><button onClick={()=>startCam("environment")} style={{marginTop:8,background:ACCENT,border:"none",borderRadius:12,padding:"10px 20px",color:"#fff",fontSize:13,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Try again</button></div>}
+
+      {/* Live camera preview — always mounted so refs stay valid */}
+      <div className="cam-preview" style={{display:mode==="captured"?"none":undefined}}>
+        <video ref={bigVRef} className="cam-back" autoPlay playsInline muted/>
+        {isDual&&mode==="live"&&(
+          <div className="cam-front-pip" style={{cursor:"pointer"}} onClick={()=>setLiveSwap(s=>!s)}>
+            <video ref={pipVRef} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+            <div style={{position:"absolute",bottom:5,right:5,background:"rgba(0,0,0,0.5)",borderRadius:99,padding:"2px 7px",fontSize:9,color:"rgba(255,255,255,0.8)"}}>tap to swap</div>
+          </div>
+        )}
+        {mode==="starting"&&!errMsg&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.8)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras…</div></div>}
+        {errMsg&&<div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.85)",gap:12}}><div style={{fontSize:40}}>📷</div><div style={{fontSize:13,color:"rgba(255,120,120,0.9)",textAlign:"center",padding:"0 24px"}}>{errMsg}</div><button onClick={initCam} style={{background:ACCENT,border:"none",borderRadius:12,padding:"10px 20px",color:"#fff",fontSize:13,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Try again</button></div>}
       </div>
-      <canvas ref={cvRef} style={{display:"none"}}/>
+
+      {/* Post-capture preview */}
+      {mode==="captured"&&captured&&(
+        <div className="cam-preview">
+          <img src={capBig} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}} alt=""/>
+          <div className="cam-front-pip" style={{cursor:"pointer",border:"3px solid rgba(255,255,255,0.95)"}} onClick={()=>setCapSwap(s=>!s)}>
+            <img src={capPip} style={{width:"100%",height:"100%",objectFit:"cover"}} alt=""/>
+            <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.25)"}}>
+              <div style={{width:28,height:28,borderRadius:"50%",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>⇄</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <canvas ref={bigCvRef} style={{display:"none"}}/>
+      <canvas ref={pipCvRef} style={{display:"none"}}/>
+
       <div className="cam-controls">
-        <button className="cam-side-btn" onClick={startCountdown} disabled={!ready||!!err}>⏱</button>
-        <button className="cam-shutter" onClick={capture} disabled={!ready||!!err} style={{opacity:(!ready||err)?0.5:1}}/>
-        <button className="cam-side-btn" onClick={flip} disabled={busy||!!err} style={{opacity:(busy||err)?0.5:1}}>🔄</button>
+        {mode==="captured"?(
+          <>
+            <div style={{width:48}}/>
+            <button onClick={confirm} style={{width:72,height:72,borderRadius:"50%",background:ACCENT,border:"5px solid rgba(255,255,255,0.3)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,boxShadow:"0 4px 24px rgba(124,111,255,0.5)"}}>✓</button>
+            <div style={{width:48}}/>
+          </>
+        ):(
+          <>
+            <button className="cam-side-btn" onClick={startCountdown} disabled={mode!=="live"}>⏱</button>
+            <button className="cam-shutter" onClick={shoot} disabled={mode!=="live"} style={{opacity:mode!=="live"?0.5:1}}/>
+            {!isDual
+              ?<button className="cam-side-btn" onClick={flipSingle} disabled={mode!=="live"}>🔄</button>
+              :<div style={{width:48}}/>
+            }
+          </>
+        )}
       </div>
     </div>
   );
