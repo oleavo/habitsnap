@@ -197,7 +197,7 @@ function SnapAlert({challenge,onDone,onSnap}){
 // ── Dual Camera ───────────────────────────────────────────────
 function DualCamera({habitName,onCapture,onClose}){
   const bvr=useRef(),fvr=useRef(),bcv=useRef(),fcv=useRef(),bst=useRef(),fst=useRef();
-  const[ready,setReady]=useState(false);const[err,setErr]=useState(false);const[swapped,setSwapped]=useState(false);const[count,setCount]=useState(null);const[flash,setFlash]=useState(false);
+  const[ready,setReady]=useState(false);const[err,setErr]=useState(false);const[swapped,setSwapped]=useState(false);const[count,setCount]=useState(null);const[flash,setFlash]=useState(false);const[dual,setDual]=useState(false);
   useEffect(()=>{
     let active=true;
     const stopAll=()=>{
@@ -208,16 +208,26 @@ function DualCamera({habitName,onCapture,onClose}){
     (async()=>{
       try{
         if(!navigator.mediaDevices?.getUserMedia)throw new Error("mediaDevices unavailable");
-        const fs=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false});
-        let bs=null;
-        try{
-          bs=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:"environment"}},audio:false});
-        }catch{
-          try{bs=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false});}catch{}
-        }
+        const seed=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+        seed.getTracks().forEach(t=>t.stop());
+        const devices=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
+        const isFront=d=>/front|user|facetime/i.test(d.label||"");
+        const isBack=d=>/back|rear|environment/i.test(d.label||"");
+        const frontDev=devices.find(isFront)||devices[0]||null;
+        const backDev=devices.find(isBack)||devices.find(d=>frontDev&&d.deviceId!==frontDev.deviceId)||null;
+        const openStream=async(pref,dev)=>{
+          if(dev?.deviceId){
+            try{return await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:dev.deviceId}},audio:false});}catch{}
+          }
+          try{return await navigator.mediaDevices.getUserMedia({video:{facingMode:pref},audio:false});}catch{return null;}
+        };
+        const fs=await openStream("user",frontDev);
+        if(!fs)throw new Error("front camera unavailable");
+        let bs=await openStream("environment",backDev);
         if(!bs)bs=fs;
         if(!active){fs.getTracks().forEach(t=>t.stop());if(bs!==fs)bs.getTracks().forEach(t=>t.stop());return;}
         bst.current=bs;fst.current=fs;
+        setDual(bs!==fs);
         setReady(true);
       }catch{
         setErr(true);
@@ -252,7 +262,7 @@ function DualCamera({habitName,onCapture,onClose}){
     onCapture(b,f);
   }
   function startCountdown(){let c=3;setCount(c);const iv=setInterval(()=>{c--;if(c<=0){clearInterval(iv);setCount(null);shoot();}else setCount(c);},1000);}
-  return(<div className="camera-modal">{flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}{count&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}<div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}><button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button><div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}><div>{habitName}</div>{err&&<div style={{fontSize:10,color:"rgba(255,120,120,0.8)",marginTop:2}}>camera not available</div>}</div><div style={{width:60}}/></div><div className="cam-preview">{!swapped?<video ref={bvr} className="cam-back" autoPlay playsInline muted/>:<video ref={fvr} className="cam-back" autoPlay playsInline muted style={{transform:"scaleX(-1)"}}/>}<div className="cam-front-pip" onClick={()=>setSwapped(s=>!s)}>{!swapped?<video ref={fvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover",transform:"scaleX(-1)"}}/>:<video ref={bvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>}</div>{!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.7)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras...</div></div>}</div><canvas ref={bcv} style={{display:"none"}}/><canvas ref={fcv} style={{display:"none"}}/><div className="cam-controls"><button className="cam-side-btn" onClick={startCountdown}>⏱</button><button className="cam-shutter" onClick={shoot} disabled={!ready||err} style={{opacity:(!ready||err)?0.5:1}}/><button className="cam-side-btn" onClick={()=>setSwapped(s=>!s)}>🔄</button></div></div>);
+  return(<div className="camera-modal">{flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}{count&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}<div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}><button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button><div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}><div>{habitName}</div>{err&&<div style={{fontSize:10,color:"rgba(255,120,120,0.8)",marginTop:2}}>camera not available</div>}{ready&&!err&&!dual&&<div style={{fontSize:10,color:"rgba(255,255,255,0.6)",marginTop:2}}>single camera mode</div>}</div><div style={{width:60}}/></div><div className="cam-preview">{!swapped?<video ref={bvr} className="cam-back" autoPlay playsInline muted/>:<video ref={fvr} className="cam-back" autoPlay playsInline muted style={{transform:"scaleX(-1)"}}/>}<div className="cam-front-pip" onClick={()=>setSwapped(s=>!s)}>{!swapped?<video ref={fvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover",transform:"scaleX(-1)"}}/>:<video ref={bvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>}</div>{!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.7)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras...</div></div>}</div><canvas ref={bcv} style={{display:"none"}}/><canvas ref={fcv} style={{display:"none"}}/><div className="cam-controls"><button className="cam-side-btn" onClick={startCountdown}>⏱</button><button className="cam-shutter" onClick={shoot} disabled={!ready||err} style={{opacity:(!ready||err)?0.5:1}}/><button className="cam-side-btn" onClick={()=>setSwapped(s=>!s)} title="Bytt stor/liten">🔄</button></div></div>);
 }
 
 function DualPhoto({backPhoto,frontPhoto,lateMin,onClick}){return(<div className="dual-photo" onClick={onClick} style={{cursor:onClick?"pointer":"default"}}><img className="dual-back" src={backPhoto} alt=""/><div className="dual-front"><img src={frontPhoto} alt=""/></div>{lateMin>0&&<div className="late-badge">Posted {lateMin} min late</div>}</div>);}
@@ -514,11 +524,14 @@ export default function App(){
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
             <div><p style={{fontSize:11,letterSpacing:2,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:4}}>{today}</p><h1 style={{fontSize:28,fontWeight:900,letterSpacing:-1,background:ACCENT,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>HabitSnap</h1></div>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
-              <img src={user.avatar} onClick={()=>profileInputRef.current?.click()} title="Change profile photo" style={{width:40,height:40,borderRadius:"50%",objectFit:"cover",border:"2px solid rgba(124,111,255,0.4)",cursor:"pointer"}} alt=""/>
+              <button onClick={()=>profileInputRef.current?.click()} style={{background:"none",border:"none",padding:0,cursor:"pointer"}}>
+                <img src={user.avatar} title="Change profile photo" style={{width:40,height:40,borderRadius:"50%",objectFit:"cover",border:"2px solid rgba(124,111,255,0.4)",display:"block"}} alt=""/>
+              </button>
+              <button onClick={()=>profileInputRef.current?.click()} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,padding:"6px 10px",color:"rgba(255,255,255,0.55)",fontSize:11,fontFamily:F,cursor:"pointer"}}>Photo</button>
               <button onClick={logout} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,padding:"6px 12px",color:"rgba(255,255,255,0.3)",fontSize:12,fontFamily:F,cursor:"pointer"}}>Out</button>
             </div>
           </div>
-          <input ref={profileInputRef} type="file" accept="image/*" capture="user" style={{display:"none"}} onChange={e=>{const file=e.target.files?.[0];updateAvatar(file);e.target.value="";}}/>
+          <input ref={profileInputRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>{const file=e.target.files?.[0];updateAvatar(file);e.target.value="";}}/>
           <div className="glass" style={{borderRadius:18,padding:"13px 16px"}}>
             <p style={{fontSize:10,letterSpacing:2,color:"rgba(255,255,255,0.25)",textTransform:"uppercase",marginBottom:6,fontWeight:600}}>Daily Wisdom</p>
             <p style={{fontSize:13,color:"rgba(255,255,255,0.7)",lineHeight:1.6,fontStyle:"italic",fontWeight:300}}>"{QUOTES[quoteIdx]}"</p>
