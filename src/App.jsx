@@ -219,130 +219,79 @@ function SnapAlert({challenge,onDone,onSnap}){
 
 // ── Dual Camera ───────────────────────────────────────────────
 function DualCamera({habitName,onCapture,onClose}){
-  const bvr=useRef(),fvr=useRef(),bcv=useRef(),fcv=useRef(),bst=useRef(),fst=useRef();
-  const[ready,setReady]=useState(false);const[err,setErr]=useState(false);const[swapped,setSwapped]=useState(false);const[count,setCount]=useState(null);const[flash,setFlash]=useState(false);const[dual,setDual]=useState(false);const[singleFacing,setSingleFacing]=useState("environment");
-  const[singleDeviceIds,setSingleDeviceIds]=useState([]);const[activeSingleDevice,setActiveSingleDevice]=useState(null);
-  const stopAll=()=>{
-    const streams=[bst.current,fst.current].filter(Boolean);
-    const seen=new Set();
-    streams.forEach(s=>s.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}}));
-    bst.current=null;fst.current=null;
-  };
-  const bindVideo=async(video,stream)=>{
-    if(!video||!stream)return;
-    if(video.srcObject!==stream)video.srcObject=stream;
-    await video.play().catch(()=>{});
-  };
-  const openSingle=async(facing)=>{
-    stopAll();
-    const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing},audio:false});
-    bst.current=s;fst.current=s;
-    setDual(false);
-    setSingleFacing(facing);
-    const tid=s.getVideoTracks?.()?.[0]?.getSettings?.()?.deviceId||null;
-    if(tid)setActiveSingleDevice(tid);
-    await bindVideo(bvr.current,s);
-    await bindVideo(fvr.current,s);
-    setReady(true);
-  };
-  const openSingleByDeviceId=async(deviceId)=>{
-    stopAll();
-    const s=await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:deviceId}},audio:false});
-    bst.current=s;fst.current=s;
-    setDual(false);
-    setActiveSingleDevice(deviceId);
-    const label=s.getVideoTracks?.()?.[0]?.label?.toLowerCase?.()||"";
-    if(/front|user|facetime/.test(label))setSingleFacing("user");else if(/back|rear|environment/.test(label))setSingleFacing("environment");
-    await bindVideo(bvr.current,s);
-    await bindVideo(fvr.current,s);
-    setReady(true);
-  };
-  useEffect(()=>{
-    let active=true;
-    (async()=>{
-      try{
-        if(!navigator.mediaDevices?.getUserMedia)throw new Error("mediaDevices unavailable");
-        const seed=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
-        seed.getTracks().forEach(t=>t.stop());
-        const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
-        const isFront=d=>/front|user|facetime/i.test(d.label||"");
-        const isBack=d=>/back|rear|environment/i.test(d.label||"");
-        const frontDev=devs.find(isFront)||devs[0]||null;
-        const backDev=devs.find(isBack)||devs.find(d=>frontDev&&d.deviceId!==frontDev.deviceId)||null;
-        const fromDev=dev=>navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:dev.deviceId}},audio:false});
-        let front=null,back=null;
-        if(frontDev&&backDev&&frontDev.deviceId!==backDev.deviceId){
-          try{front=await fromDev(frontDev);}catch{}
-          try{back=await fromDev(backDev);}catch{}
-        }
-        if(!active){front?.getTracks().forEach(t=>t.stop());back?.getTracks().forEach(t=>t.stop());return;}
-        setSingleDeviceIds(devs.map(d=>d.deviceId).filter(Boolean));
-        if(front&&back){
-          bst.current=back;fst.current=front;
-          setDual(true);setSingleFacing("environment");
-          await bindVideo(bvr.current,back);
-          await bindVideo(fvr.current,front);
-          setReady(true);
-          return;
-        }
-        front?.getTracks().forEach(t=>t.stop());
-        back?.getTracks().forEach(t=>t.stop());
-        if(backDev?.deviceId)await openSingleByDeviceId(backDev.deviceId).catch(async()=>openSingle("environment").catch(()=>openSingle("user")));
-        else await openSingle("environment").catch(()=>openSingle("user"));
-      }catch{
-        setErr(true);
-      }
-    })();
-    return()=>{active=false;stopAll();};
-  },[]);
-  useEffect(()=>{
-    if(!ready)return;
-    if(dual){
-      const big=swapped?fst.current:bst.current;
-      const pip=swapped?bst.current:fst.current;
-      bindVideo(bvr.current,big);
-      bindVideo(fvr.current,pip);
-    }
-  },[ready,dual,swapped]);
-  async function toggleSwap(){
-    if(dual){setSwapped(s=>!s);return;}
+  const vRef=useRef();const cvRef=useRef();const streamRef=useRef(null);
+  const[ready,setReady]=useState(false);const[err,setErr]=useState(null);
+  const[facing,setFacing]=useState("environment");const[busy,setBusy]=useState(false);
+  const[count,setCount]=useState(null);const[flash,setFlash]=useState(false);
+
+  const stopStream=useCallback(()=>{streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null;},[]);
+
+  const startCam=useCallback(async(facingMode)=>{
+    stopStream();setReady(false);setErr(null);
     try{
-      setReady(false);
-      if(singleDeviceIds.length>1&&activeSingleDevice){
-        const idx=singleDeviceIds.indexOf(activeSingleDevice);
-        const nextId=singleDeviceIds[(idx+1)%singleDeviceIds.length];
-        await openSingleByDeviceId(nextId);
-      }else{
-        const next=singleFacing==="environment"?"user":"environment";
-        await openSingle(next);
-      }
-      setErr(false);
-    }catch{
-      setErr(true);
-    }
-  }
-  function shoot(){
-    setFlash(true);setTimeout(()=>setFlash(false),200);let b,f;
-    const cap=(v,c)=>{
-      if(!v||!c||v.videoWidth<=0||v.videoHeight<=0)return null;
-      c.width=v.videoWidth;c.height=v.videoHeight;
-      const ctx=c.getContext("2d");
-      if(!ctx)return null;
-      ctx.drawImage(v,0,0,c.width,c.height);
-      return c.toDataURL("image/jpeg",.85);
-    };
-    b=cap(bvr.current,bcv.current);
-    f=cap(fvr.current,fcv.current);
-    if(!b&&!f){setErr(true);return;}
-    if(!b&&f)b=f;
-    if(!f&&b)f=b;
-    const streams=[bst.current,fst.current].filter(Boolean);
-    const seen=new Set();
-    streams.forEach(s=>s.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}}));bst.current=null;fst.current=null;
-    onCapture(b,f);
-  }
-  function startCountdown(){let c=3;setCount(c);const iv=setInterval(()=>{c--;if(c<=0){clearInterval(iv);setCount(null);shoot();}else setCount(c);},1000);}
-  return(<div className="camera-modal">{flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}{count&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}<div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}><button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button><div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}><div>{habitName}</div>{err&&<div style={{fontSize:10,color:"rgba(255,120,120,0.8)",marginTop:2}}>camera not available</div>}{ready&&!err&&!dual&&<div style={{fontSize:10,color:"rgba(255,255,255,0.6)",marginTop:2}}>single camera mode</div>}</div><div style={{width:60}}/></div><div className="cam-preview"><video ref={bvr} className="cam-back" autoPlay playsInline muted style={{transform:(!dual&&singleFacing==="user")||(dual&&swapped)?"scaleX(-1)":"none"}}/><div className="cam-front-pip" onClick={toggleSwap}><video ref={fvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover",transform:(!dual&&singleFacing==="user")||(!swapped&&dual)?"scaleX(-1)":"none"}}/></div>{!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.7)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras...</div></div>}</div><canvas ref={bcv} style={{display:"none"}}/><canvas ref={fcv} style={{display:"none"}}/><div className="cam-controls"><button className="cam-side-btn" onClick={startCountdown}>⏱</button><button className="cam-shutter" onClick={shoot} disabled={!ready||err} style={{opacity:(!ready||err)?0.5:1}}/><button className="cam-side-btn" onClick={toggleSwap} title="Bytt stor/liten">🔄</button></div></div>);
+      if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera not supported in this browser.");
+      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facingMode}},audio:false});
+      streamRef.current=s;
+      const v=vRef.current;
+      if(v){v.srcObject=s;v.onloadedmetadata=()=>v.play().catch(()=>{});}
+      setFacing(facingMode);setReady(true);
+    }catch(e){setErr(e?.message||"Could not access camera.");}
+  },[stopStream]);
+
+  useEffect(()=>{startCam("environment");return stopStream;},[]);
+
+  const flip=async()=>{
+    if(busy)return;setBusy(true);
+    await startCam(facing==="environment"?"user":"environment");
+    setBusy(false);
+  };
+
+  const capture=useCallback(()=>{
+    const v=vRef.current;const c=cvRef.current;
+    if(!v||!c||!ready||v.readyState<2)return;
+    setFlash(true);setTimeout(()=>setFlash(false),180);
+    const w=v.videoWidth||640;const h=v.videoHeight||480;
+    c.width=w;c.height=h;
+    const ctx=c.getContext("2d");if(!ctx)return;
+    if(facing==="user"){ctx.save();ctx.scale(-1,1);ctx.drawImage(v,-w,0,w,h);ctx.restore();}
+    else ctx.drawImage(v,0,0,w,h);
+    const photo=c.toDataURL("image/jpeg",0.85);
+    stopStream();
+    onCapture(photo,photo);
+  },[ready,facing,stopStream,onCapture]);
+
+  const startCountdown=()=>{
+    if(!ready)return;
+    let c=3;setCount(c);
+    const iv=setInterval(()=>{c--;if(c<=0){clearInterval(iv);setCount(null);capture();}else setCount(c);},1000);
+  };
+
+  return(
+    <div className="camera-modal">
+      {flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}
+      {count!=null&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}
+      <div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}>
+        <button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button>
+        <div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}>
+          <div>{habitName}</div>
+          <div style={{fontSize:10,color:"rgba(255,255,255,0.5)",marginTop:2}}>{facing==="user"?"Front camera 🤳":"Back camera 📷"}</div>
+          {err&&<div style={{fontSize:10,color:"rgba(255,120,120,0.85)",marginTop:2}}>{err}</div>}
+        </div>
+        <div style={{width:60}}/>
+      </div>
+      <div className="cam-preview">
+        <video ref={vRef} className="cam-back" autoPlay playsInline muted style={{transform:facing==="user"?"scaleX(-1)":"none"}}/>
+        {!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.8)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting camera…</div></div>}
+        {err&&<div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.85)",gap:12}}><div style={{fontSize:40}}>📷</div><div style={{fontSize:13,color:"rgba(255,120,120,0.9)",textAlign:"center",padding:"0 24px"}}>{err}</div><button onClick={()=>startCam("environment")} style={{marginTop:8,background:ACCENT,border:"none",borderRadius:12,padding:"10px 20px",color:"#fff",fontSize:13,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Try again</button></div>}
+      </div>
+      <canvas ref={cvRef} style={{display:"none"}}/>
+      <div className="cam-controls">
+        <button className="cam-side-btn" onClick={startCountdown} disabled={!ready||!!err}>⏱</button>
+        <button className="cam-shutter" onClick={capture} disabled={!ready||!!err} style={{opacity:(!ready||err)?0.5:1}}/>
+        <button className="cam-side-btn" onClick={flip} disabled={busy||!!err} style={{opacity:(busy||err)?0.5:1}}>🔄</button>
+      </div>
+    </div>
+  );
 }
 
 function DualPhoto({backPhoto,frontPhoto,lateMin,onClick}){return(<div className="dual-photo" onClick={onClick} style={{cursor:onClick?"pointer":"default"}}><img className="dual-back" src={backPhoto} alt=""/><div className="dual-front"><img src={frontPhoto} alt=""/></div>{lateMin>0&&<div className="late-badge">Posted {lateMin} min late</div>}</div>);}
@@ -374,58 +323,76 @@ function CommentSheet({post,currentUser,onClose,onAdd}){
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:400,backdropFilter:"blur(12px)"}} onClick={e=>{if(e.target===e.currentTarget)onClose();}}><div style={{background:"#141420",border:"1px solid rgba(255,255,255,0.08)",borderRadius:"28px 28px 0 0",padding:"24px 20px 36px",width:"100%",maxWidth:430,maxHeight:"70vh",display:"flex",flexDirection:"column"}} className="fade-in"><div style={{width:36,height:4,background:"rgba(255,255,255,0.12)",borderRadius:99,margin:"0 auto 20px"}}/><h3 style={{fontSize:16,fontWeight:700,marginBottom:16}}>Comments 💬</h3><div style={{flex:1,overflowY:"auto",marginBottom:16}}>{(post.comments||[]).length===0&&<p style={{fontSize:13,color:"rgba(255,255,255,0.2)",fontStyle:"italic",textAlign:"center",padding:"20px 0"}}>No comments yet. Be the first to be annoying.</p>}{(post.comments||[]).map(c=>(<div key={c.id} style={{marginBottom:14}}><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><img src={`https://i.pravatar.cc/40?u=${c.author}`} style={{width:28,height:28,borderRadius:"50%"}} alt=""/><span style={{fontSize:13,fontWeight:700}}>{c.displayName}</span><span style={{fontSize:11,color:"rgba(255,255,255,0.3)"}}>{c.time}</span></div><div style={{fontSize:14,color:"rgba(255,255,255,0.8)",paddingLeft:36,lineHeight:1.5}}>{c.text}</div></div>))}</div><div style={{display:"flex",gap:10}}><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Say something... (be nice-ish)" style={{flex:1,background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:12,padding:"11px 14px",fontSize:14,fontFamily:F,outline:"none",color:"#fff"}}/><button onClick={submit} style={{background:ACCENT,border:"none",borderRadius:12,padding:"11px 16px",color:"#fff",fontSize:13,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Post</button></div></div></div>);
 }
 
-function HabitProgressChart({habits,habitHistory,selectedId}){
-  const activeHabits=selectedId==="all"?habits:habits.filter(h=>String(h.id)===String(selectedId));
-  const series=activeHabits.map((h,i)=>({
-    id:String(h.id),
-    name:h.name,
-    icon:h.icon,
-    color:CHART_COLORS[i%CHART_COLORS.length],
-    points:(habitHistory[String(h.id)]||[]).map(p=>({x:new Date(p.ts).getTime(),y:Math.max(0,p.streak||0),done:!!p.done})).filter(p=>Number.isFinite(p.x)).sort((a,b)=>a.x-b.x),
-  })).filter(s=>s.points.length>0);
-  if(series.length===0)return(<div className="glass" style={{borderRadius:20,padding:"26px 18px",textAlign:"center"}}><div style={{fontSize:38,marginBottom:10}}>📉</div><p style={{fontSize:13,color:"rgba(255,255,255,0.3)"}}>Ingen historikk enda. Fullfør en rutine for å se utvikling.</p></div>);
-  const allPts=series.flatMap(s=>s.points);
-  const minX=Math.min(...allPts.map(p=>p.x));const maxX=Math.max(...allPts.map(p=>p.x));
-  const maxY=Math.max(1,...allPts.map(p=>p.y));
-  const W=340,H=190,PX=32,PY=20;
-  const scaleX=x=>PX+((x-minX)/(Math.max(1,maxX-minX)))*(W-PX-12);
-  const scaleY=y=>H-PY-(y/maxY)*(H-PY*2);
-  const fmt=ts=>new Date(ts).toLocaleDateString("no",{day:"numeric",month:"short"});
+function HabitHeatmap({habits,habitHistory}){
+  const DAYS=14;
+  const days=Array.from({length:DAYS},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(DAYS-1-i));return d;});
+  if(habits.length===0)return(<div className="glass" style={{borderRadius:20,padding:"26px 18px",textAlign:"center"}}><div style={{fontSize:38,marginBottom:10}}>📋</div><p style={{fontSize:13,color:"rgba(255,255,255,0.3)"}}>Add some habits first.</p></div>);
+  const rows=habits.map((h,idx)=>{
+    const entries=habitHistory[String(h.id)]||[];
+    const byDay={};
+    entries.forEach(e=>{const k=new Date(e.ts).toDateString();byDay[k]=!!e.done;});
+    return{...h,color:CHART_COLORS[idx%CHART_COLORS.length],dayDone:days.map(d=>byDay[d.toDateString()]??null)};
+  });
+  const dailyPct=days.map((_,di)=>{
+    const vals=rows.map(r=>r.dayDone[di]).filter(v=>v!==null);
+    return vals.length===0?null:vals.filter(Boolean).length/vals.length;
+  });
+  const totalDone=rows.flatMap(r=>r.dayDone).filter(v=>v===true).length;
+  const totalTracked=rows.flatMap(r=>r.dayDone).filter(v=>v!==null).length;
+  const rate=totalTracked>0?Math.round((totalDone/totalTracked)*100):0;
   return(
-    <div className="glass" style={{borderRadius:20,padding:"16px 14px"}}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:200,display:"block"}}>
-        {[0,0.25,0.5,0.75,1].map(t=>(
-          <g key={t}>
-            <line x1={PX} y1={PY+t*(H-PY*2)} x2={W-8} y2={PY+t*(H-PY*2)} stroke="rgba(255,255,255,0.07)" strokeWidth="1"/>
-            <text x={PX-4} y={PY+t*(H-PY*2)+3} fill="rgba(255,255,255,0.25)" fontSize="8" textAnchor="end">{Math.round(maxY*(1-t))}</text>
-          </g>
-        ))}
-        {series.map(s=>{
-          if(s.points.length===1)return <circle key={s.id} cx={scaleX(s.points[0].x)} cy={scaleY(s.points[0].y)} r="5" fill={s.color}/>;
-          const lineD=s.points.map((p,i)=>`${i===0?"M":"L"} ${scaleX(p.x)} ${scaleY(p.y)}`).join(" ");
-          const areaD=`${lineD} L ${scaleX(s.points[s.points.length-1].x)} ${H-PY} L ${scaleX(s.points[0].x)} ${H-PY} Z`;
-          return(
-            <g key={s.id}>
-              <path d={areaD} fill={s.color} opacity="0.1"/>
-              <path d={lineD} fill="none" stroke={s.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-              {s.points.map((p,i)=>(
-                <circle key={i} cx={scaleX(p.x)} cy={scaleY(p.y)} r={p.done?3.5:2} fill={p.done?s.color:"#0a0a0f"} stroke={s.color} strokeWidth={p.done?0:1.5}/>
-              ))}
-            </g>
-          );
-        })}
-      </svg>
-      <div style={{display:"flex",justifyContent:"space-between",marginTop:4,fontSize:10,color:"rgba(255,255,255,0.25)",paddingLeft:PX}}>
-        <span>{fmt(minX)}</span>
-        <span>{fmt(maxX)}</span>
+    <div>
+      {/* Overall rate */}
+      <div className="glass" style={{borderRadius:20,padding:"16px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:16}}>
+        <div style={{width:64,height:64,borderRadius:"50%",background:`conic-gradient(#7c6fff ${rate*3.6}deg,rgba(255,255,255,0.07) 0deg)`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+          <div style={{width:50,height:50,borderRadius:"50%",background:"#0f0f1a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:900,color:"#a78bfa"}}>{rate}%</div>
+        </div>
+        <div>
+          <div style={{fontSize:15,fontWeight:800,marginBottom:3}}>14-day completion rate</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.3)"}}>
+            {rate>=80?"Killing it. Seriously. 🔥":rate>=60?"Solid effort. Don't stop now.":rate>=40?"Room to grow. You know it.":"You've been slacking. We all see it. 👀"}
+          </div>
+        </div>
       </div>
-      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:14}}>
-        {series.map(s=>(
-          <div key={s.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:"rgba(255,255,255,0.6)"}}>
-            <span style={{width:10,height:10,borderRadius:99,background:s.color,display:"inline-block",flexShrink:0}}/>
-            {s.icon} {s.name}
+      {/* Daily bars */}
+      <div className="glass" style={{borderRadius:20,padding:"16px 14px",marginBottom:12}}>
+        <div style={{fontSize:10,fontWeight:700,letterSpacing:1.5,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:10}}>Daily completion</div>
+        <div style={{display:"flex",alignItems:"flex-end",gap:3,height:52}}>
+          {dailyPct.map((pct,i)=>(
+            <div key={i} style={{flex:1,height:"100%",display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
+              <div style={{borderRadius:3,background:pct===null?"rgba(255,255,255,0.05)":pct>=0.8?"#0be881":pct>=0.5?"#7c6fff":"#ff6b6b",height:pct===null?4:Math.max(5,pct*52),transition:"height .3s"}}/>
+            </div>
+          ))}
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:9,color:"rgba(255,255,255,0.2)"}}>
+          <span>{days[0].toLocaleDateString("en",{month:"short",day:"numeric"})}</span>
+          <span>Today</span>
+        </div>
+      </div>
+      {/* Habit grid */}
+      <div className="glass" style={{borderRadius:20,padding:"16px 14px"}}>
+        <div style={{fontSize:10,fontWeight:700,letterSpacing:1.5,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:12}}>Habit grid · last 14 days</div>
+        <div style={{display:"flex",marginBottom:6}}>
+          <div style={{width:68,flexShrink:0}}/>
+          <div style={{flex:1,display:"flex",gap:3}}>
+            {days.map((d,i)=><div key={i} style={{flex:1,textAlign:"center",fontSize:8,color:"rgba(255,255,255,0.25)"}}>{i%3===0?d.toLocaleDateString("en",{day:"numeric"}):""}</div>)}
+          </div>
+        </div>
+        {rows.map(row=>(
+          <div key={row.id} style={{display:"flex",alignItems:"center",gap:6,marginBottom:7}}>
+            <div style={{width:62,flexShrink:0,fontSize:11,color:"rgba(255,255,255,0.5)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.icon} {row.name}</div>
+            <div style={{flex:1,display:"flex",gap:3}}>
+              {row.dayDone.map((done,i)=>(
+                <div key={i} style={{flex:1,aspectRatio:"1",borderRadius:3,minWidth:0,background:done===true?row.color:done===false?"rgba(255,255,255,0.08)":"rgba(255,255,255,0.03)",boxShadow:done===true?`0 0 6px ${row.color}60`:undefined}}/>
+              ))}
+            </div>
           </div>
         ))}
+        <div style={{display:"flex",gap:14,marginTop:10,fontSize:10,color:"rgba(255,255,255,0.25)"}}>
+          <span><span style={{display:"inline-block",width:9,height:9,borderRadius:2,background:"#7c6fff",marginRight:5,verticalAlign:"middle"}}/>Done</span>
+          <span><span style={{display:"inline-block",width:9,height:9,borderRadius:2,background:"rgba(255,255,255,0.08)",marginRight:5,verticalAlign:"middle"}}/>Missed</span>
+          <span><span style={{display:"inline-block",width:9,height:9,borderRadius:2,background:"rgba(255,255,255,0.03)",marginRight:5,verticalAlign:"middle"}}/>No data</span>
+        </div>
       </div>
     </div>
   );
@@ -682,7 +649,7 @@ export default function App(){
 
         {/* TABS */}
         <div style={{display:"flex",padding:"0 16px",marginBottom:4,gap:3,overflowX:"auto"}}>
-          {[["habits","Habits"],["feed","Feed"],["friends","Friends 👥"],["leaderboard","🏆"],["analyse","Analyse 📈"],["graveyard","⚰️ Graveyard"]].map(([k,l])=>(
+          {[["habits","Habits"],["feed","Feed"],["friends","Friends 👥"],["leaderboard","🏆"],["analyse","Progress 📊"],["graveyard","⚰️ Graveyard"]].map(([k,l])=>(
             <button key={k} onClick={()=>setTab(k)} style={{flexShrink:0,minWidth:98,padding:"10px 12px",background:tab===k?"rgba(124,111,255,0.15)":"none",border:tab===k?"1px solid rgba(124,111,255,0.3)":"1px solid transparent",borderRadius:12,color:tab===k?"#a78bfa":"rgba(255,255,255,0.3)",fontSize:12,fontWeight:tab===k?700:400,fontFamily:F,cursor:"pointer",textAlign:"center"}}>{l}</button>
           ))}
         </div>
@@ -805,11 +772,11 @@ export default function App(){
           </div>
         )}
 
-        {/* ANALYSE */}
+        {/* PROGRESS */}
         {tab==="analyse"&&(
           <div style={{padding:"16px 22px"}} className="fade-in">
-            <h2 style={{fontSize:22,fontWeight:900,letterSpacing:-0.5,marginBottom:4}}>Analyse 📈</h2>
-            <p style={{fontSize:12,color:"rgba(255,255,255,0.25)",marginBottom:16,fontStyle:"italic"}}>Streak-utvikling over tid for rutinene dine.</p>
+            <h2 style={{fontSize:22,fontWeight:900,letterSpacing:-0.5,marginBottom:4}}>Progress 📊</h2>
+            <p style={{fontSize:12,color:"rgba(255,255,255,0.25)",marginBottom:16,fontStyle:"italic"}}>Your last 14 days. No excuses.</p>
             <div style={{display:"flex",gap:10,marginBottom:16}}>
               {[
                 {label:"Habits",value:habits.length,icon:"📋"},
@@ -823,15 +790,7 @@ export default function App(){
                 </div>
               ))}
             </div>
-            <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:8,marginBottom:12}}>
-              <button onClick={()=>setSelectedTrendHabit("all")} style={{flexShrink:0,padding:"8px 12px",borderRadius:12,border:`1px solid ${selectedTrendHabit==="all"?"rgba(124,111,255,0.5)":"rgba(255,255,255,0.1)"}`,background:selectedTrendHabit==="all"?"rgba(124,111,255,0.15)":"rgba(255,255,255,0.04)",color:selectedTrendHabit==="all"?"#a78bfa":"rgba(255,255,255,0.45)",fontSize:12,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Alle</button>
-              {habits.map(h=>(
-                <button key={h.id} onClick={()=>setSelectedTrendHabit(String(h.id))} style={{flexShrink:0,padding:"8px 12px",borderRadius:12,border:`1px solid ${String(selectedTrendHabit)===String(h.id)?"rgba(124,111,255,0.5)":"rgba(255,255,255,0.1)"}`,background:String(selectedTrendHabit)===String(h.id)?"rgba(124,111,255,0.15)":"rgba(255,255,255,0.04)",color:String(selectedTrendHabit)===String(h.id)?"#a78bfa":"rgba(255,255,255,0.45)",fontSize:12,fontWeight:700,fontFamily:F,cursor:"pointer"}}>
-                  {h.icon} {h.name}
-                </button>
-              ))}
-            </div>
-            <HabitProgressChart habits={habits} habitHistory={habitHistory} selectedId={selectedTrendHabit}/>
+            <HabitHeatmap habits={habits} habitHistory={habitHistory}/>
           </div>
         )}
 
