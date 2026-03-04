@@ -69,6 +69,7 @@ const DEMO_USERS = [
 const P_ORDER={high:0,medium:1,low:2};
 const F="'Inter',sans-serif";
 const ACCENT="linear-gradient(135deg,#7c6fff,#c471ed)";
+const CHART_COLORS=["#7c6fff","#00d2a8","#ff8c42","#ff6b6b","#5bc0eb","#ffd166","#c471ed","#9ef01a"];
 
 const css=`
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
@@ -217,8 +218,6 @@ function DualCamera({habitName,onCapture,onClose}){
         if(!bs)bs=fs;
         if(!active){fs.getTracks().forEach(t=>t.stop());if(bs!==fs)bs.getTracks().forEach(t=>t.stop());return;}
         bst.current=bs;fst.current=fs;
-        if(bvr.current){bvr.current.srcObject=bs;await bvr.current.play().catch(()=>{});}
-        if(fvr.current){fvr.current.srcObject=fs;await fvr.current.play().catch(()=>{});}
         setReady(true);
       }catch{
         setErr(true);
@@ -226,30 +225,34 @@ function DualCamera({habitName,onCapture,onClose}){
     })();
     return()=>{active=false;stopAll();};
   },[]);
+  useEffect(()=>{
+    if(!ready)return;
+    const bind=async(v,s)=>{if(v&&s&&v.srcObject!==s){v.srcObject=s;await v.play().catch(()=>{});}};
+    bind(bvr.current,bst.current);
+    bind(fvr.current,fst.current);
+  },[ready,swapped]);
   function shoot(){
     setFlash(true);setTimeout(()=>setFlash(false),200);let b,f;
-    const canCapture=!err&&bvr.current&&fvr.current&&bvr.current.videoWidth>0&&fvr.current.videoWidth>0;
-    if(!canCapture){
-      b=UNSPLASH[Math.floor(Math.random()*UNSPLASH.length)];
-      f=FRONT_AVATARS[Math.floor(Math.random()*FRONT_AVATARS.length)];
-    }else{
-      const cap=(v,c)=>{
-        c.width=v.videoWidth||1280;c.height=v.videoHeight||960;
-        const ctx=c.getContext("2d");
-        if(!ctx)return null;
-        ctx.drawImage(v,0,0,c.width,c.height);
-        return c.toDataURL("image/jpeg",.85);
-      };
-      b=cap(bvr.current,bcv.current)||UNSPLASH[Math.floor(Math.random()*UNSPLASH.length)];
-      f=cap(fvr.current,fcv.current)||FRONT_AVATARS[Math.floor(Math.random()*FRONT_AVATARS.length)];
-    }
+    const cap=(v,c)=>{
+      if(!v||!c||v.videoWidth<=0||v.videoHeight<=0)return null;
+      c.width=v.videoWidth;c.height=v.videoHeight;
+      const ctx=c.getContext("2d");
+      if(!ctx)return null;
+      ctx.drawImage(v,0,0,c.width,c.height);
+      return c.toDataURL("image/jpeg",.85);
+    };
+    b=cap(bvr.current,bcv.current);
+    f=cap(fvr.current,fcv.current);
+    if(!b&&!f){setErr(true);return;}
+    if(!b&&f)b=f;
+    if(!f&&b)f=b;
     const streams=[bst.current,fst.current].filter(Boolean);
     const seen=new Set();
     streams.forEach(s=>s.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}}));
     onCapture(b,f);
   }
   function startCountdown(){let c=3;setCount(c);const iv=setInterval(()=>{c--;if(c<=0){clearInterval(iv);setCount(null);shoot();}else setCount(c);},1000);}
-  return(<div className="camera-modal">{flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}{count&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}<div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}><button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button><div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}><div>{habitName}</div>{err&&<div style={{fontSize:10,color:"rgba(255,255,255,0.5)",marginTop:2}}>demo mode</div>}</div><div style={{width:60}}/></div><div className="cam-preview">{!swapped?<video ref={bvr} className="cam-back" autoPlay playsInline muted/>:<video ref={fvr} className="cam-back" autoPlay playsInline muted style={{transform:"scaleX(-1)"}}/>}<div className="cam-front-pip" onClick={()=>setSwapped(s=>!s)}>{!swapped?<video ref={fvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover",transform:"scaleX(-1)"}}/>:<video ref={bvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>}</div>{!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.7)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras...</div></div>}</div><canvas ref={bcv} style={{display:"none"}}/><canvas ref={fcv} style={{display:"none"}}/><div className="cam-controls"><button className="cam-side-btn" onClick={startCountdown}>⏱</button><button className="cam-shutter" onClick={shoot}/><button className="cam-side-btn" onClick={()=>setSwapped(s=>!s)}>🔄</button></div></div>);
+  return(<div className="camera-modal">{flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}{count&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}<div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}><button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button><div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}><div>{habitName}</div>{err&&<div style={{fontSize:10,color:"rgba(255,120,120,0.8)",marginTop:2}}>camera not available</div>}</div><div style={{width:60}}/></div><div className="cam-preview">{!swapped?<video ref={bvr} className="cam-back" autoPlay playsInline muted/>:<video ref={fvr} className="cam-back" autoPlay playsInline muted style={{transform:"scaleX(-1)"}}/>}<div className="cam-front-pip" onClick={()=>setSwapped(s=>!s)}>{!swapped?<video ref={fvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover",transform:"scaleX(-1)"}}/>:<video ref={bvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>}</div>{!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.7)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras...</div></div>}</div><canvas ref={bcv} style={{display:"none"}}/><canvas ref={fcv} style={{display:"none"}}/><div className="cam-controls"><button className="cam-side-btn" onClick={startCountdown}>⏱</button><button className="cam-shutter" onClick={shoot} disabled={!ready||err} style={{opacity:(!ready||err)?0.5:1}}/><button className="cam-side-btn" onClick={()=>setSwapped(s=>!s)}>🔄</button></div></div>);
 }
 
 function DualPhoto({backPhoto,frontPhoto,lateMin,onClick}){return(<div className="dual-photo" onClick={onClick} style={{cursor:onClick?"pointer":"default"}}><img className="dual-back" src={backPhoto} alt=""/><div className="dual-front"><img src={frontPhoto} alt=""/></div>{lateMin>0&&<div className="late-badge">Posted {lateMin} min late</div>}</div>);}
@@ -258,7 +261,7 @@ function DualPhoto({backPhoto,frontPhoto,lateMin,onClick}){return(<div className
 function AuthScreen({onAuth}){
   const[mode,setMode]=useState("welcome");const[u,setU]=useState("");const[d,setD]=useState("");const[p,setP]=useState("");const[b,setB]=useState("");const[err,setErr]=useState("");const[loading,setLoading]=useState(false);
   const FUNNY_BIOS=["professional napper 💤","still figuring it out 🤷","certified gym bro 💪","mediocre at everything 🌟","chronically online 📱"];
-  async function signup(){if(!u.trim()||!d.trim()||!p.trim()){setErr("Fill everything in, lazy.");return;}if(u.length<3){setErr("Username too short. Put some effort in.");return;}if(p.length<4){setErr("Password under 4 chars? Really?");return;}setLoading(true);const ex=await dbGet(`user:${u.toLowerCase()}`);if(ex){setErr("Username taken. Not very original, are you?");setLoading(false);return;}const user={username:u.toLowerCase(),displayName:d,password:p,bio:b||FUNNY_BIOS[Math.floor(Math.random()*FUNNY_BIOS.length)],avatar:`https://i.pravatar.cc/150?u=${u}`,friends:[],habits:DEFAULT_HABITS,posts:[],graveyard:[],shameLog:[]};await dbSet(`user:${u.toLowerCase()}`,user);await dbSet("session",{username:u.toLowerCase()});onAuth(user);setLoading(false);}
+  async function signup(){if(!u.trim()||!d.trim()||!p.trim()){setErr("Fill everything in, lazy.");return;}if(u.length<3){setErr("Username too short. Put some effort in.");return;}if(p.length<4){setErr("Password under 4 chars? Really?");return;}setLoading(true);const ex=await dbGet(`user:${u.toLowerCase()}`);if(ex){setErr("Username taken. Not very original, are you?");setLoading(false);return;}const user={username:u.toLowerCase(),displayName:d,password:p,bio:b||FUNNY_BIOS[Math.floor(Math.random()*FUNNY_BIOS.length)],avatar:`https://i.pravatar.cc/150?u=${u}`,friends:[],habits:DEFAULT_HABITS,posts:[],graveyard:[],shameLog:[],habitHistory:{}};await dbSet(`user:${u.toLowerCase()}`,user);await dbSet("session",{username:u.toLowerCase()});onAuth(user);setLoading(false);}
   async function login(){if(!u.trim()||!p.trim()){setErr("Both fields. Yes both.");return;}setLoading(true);const user=await dbGet(`user:${u.toLowerCase()}`);if(!user){setErr("Who are you? Sign up first.");setLoading(false);return;}if(user.password!==p){setErr("Wrong password. Did you forget already?");setLoading(false);return;}await dbSet("session",{username:u.toLowerCase()});onAuth(user);setLoading(false);}
   const inp={background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:14,padding:"14px 16px",fontSize:15,fontFamily:F,outline:"none",width:"100%",marginBottom:10,color:"#fff"};
   if(mode==="welcome")return(<div className="auth-bg fade-in"><div style={{position:"absolute",top:-100,right:-80,width:300,height:300,borderRadius:"50%",background:"radial-gradient(circle,rgba(124,111,255,0.2),transparent 70%)",pointerEvents:"none"}}/><div style={{textAlign:"center",marginBottom:48}}><div style={{fontSize:64,marginBottom:16}}>📸</div><h1 style={{fontSize:36,fontWeight:900,letterSpacing:-1.5,background:ACCENT,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:10}}>HabitSnap</h1><p style={{fontSize:14,color:"rgba(255,255,255,0.35)",lineHeight:1.6,maxWidth:280,margin:"0 auto"}}>The habit app that judges you in real time. With friends. And Gordon Ramsay.</p></div><div style={{width:"100%",maxWidth:320}}><button className="auth-btn" onClick={()=>setMode("signup")}>Create account 🚀</button><button className="auth-btn-ghost" onClick={()=>setMode("login")}>Already a member (good for you)</button></div></div>);
@@ -281,11 +284,47 @@ function CommentSheet({post,currentUser,onClose,onAdd}){
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:400,backdropFilter:"blur(12px)"}} onClick={e=>{if(e.target===e.currentTarget)onClose();}}><div style={{background:"#141420",border:"1px solid rgba(255,255,255,0.08)",borderRadius:"28px 28px 0 0",padding:"24px 20px 36px",width:"100%",maxWidth:430,maxHeight:"70vh",display:"flex",flexDirection:"column"}} className="fade-in"><div style={{width:36,height:4,background:"rgba(255,255,255,0.12)",borderRadius:99,margin:"0 auto 20px"}}/><h3 style={{fontSize:16,fontWeight:700,marginBottom:16}}>Comments 💬</h3><div style={{flex:1,overflowY:"auto",marginBottom:16}}>{(post.comments||[]).length===0&&<p style={{fontSize:13,color:"rgba(255,255,255,0.2)",fontStyle:"italic",textAlign:"center",padding:"20px 0"}}>No comments yet. Be the first to be annoying.</p>}{(post.comments||[]).map(c=>(<div key={c.id} style={{marginBottom:14}}><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><img src={`https://i.pravatar.cc/40?u=${c.author}`} style={{width:28,height:28,borderRadius:"50%"}} alt=""/><span style={{fontSize:13,fontWeight:700}}>{c.displayName}</span><span style={{fontSize:11,color:"rgba(255,255,255,0.3)"}}>{c.time}</span></div><div style={{fontSize:14,color:"rgba(255,255,255,0.8)",paddingLeft:36,lineHeight:1.5}}>{c.text}</div></div>))}</div><div style={{display:"flex",gap:10}}><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Say something... (be nice-ish)" style={{flex:1,background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:12,padding:"11px 14px",fontSize:14,fontFamily:F,outline:"none",color:"#fff"}}/><button onClick={submit} style={{background:ACCENT,border:"none",borderRadius:12,padding:"11px 16px",color:"#fff",fontSize:13,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Post</button></div></div></div>);
 }
 
+function HabitProgressChart({habits,habitHistory,selectedId}){
+  const activeHabits=selectedId==="all"?habits:habits.filter(h=>String(h.id)===String(selectedId));
+  const series=activeHabits.map((h,i)=>({
+    id:String(h.id),
+    name:h.name,
+    color:CHART_COLORS[i%CHART_COLORS.length],
+    points:(habitHistory[String(h.id)]||[]).map(p=>({x:new Date(p.ts).getTime(),y:Math.max(0,p.streak||0)})).filter(p=>Number.isFinite(p.x)).sort((a,b)=>a.x-b.x),
+  })).filter(s=>s.points.length>0);
+  if(series.length===0)return(<div className="glass" style={{borderRadius:20,padding:"26px 18px",textAlign:"center"}}><div style={{fontSize:38,marginBottom:10}}>📉</div><p style={{fontSize:13,color:"rgba(255,255,255,0.3)"}}>Ingen historikk enda. Fullfor en rutine for a se utvikling.</p></div>);
+  const allPts=series.flatMap(s=>s.points);
+  const minX=Math.min(...allPts.map(p=>p.x));const maxX=Math.max(...allPts.map(p=>p.x));
+  const maxY=Math.max(1,...allPts.map(p=>p.y));
+  const W=350,H=180,P=20;
+  const scaleX=x=>P+((x-minX)/(Math.max(1,maxX-minX)))*(W-P*2);
+  const scaleY=y=>H-P-(y/maxY)*(H-P*2);
+  return(
+    <div className="glass" style={{borderRadius:20,padding:"16px 14px"}}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:190,display:"block"}}>
+        {[0,0.25,0.5,0.75,1].map(t=>(<line key={t} x1={P} y1={P+t*(H-P*2)} x2={W-P} y2={P+t*(H-P*2)} stroke="rgba(255,255,255,0.08)" strokeWidth="1"/>))}
+        {series.map(s=>{
+          const d=s.points.map((p,idx)=>`${idx===0?"M":"L"} ${scaleX(p.x)} ${scaleY(p.y)}`).join(" ");
+          return <path key={s.id} d={d} fill="none" stroke={s.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>;
+        })}
+      </svg>
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:2,fontSize:10,color:"rgba(255,255,255,0.3)"}}>
+        <span>{new Date(minX).toLocaleDateString()}</span>
+        <span>{new Date(maxX).toLocaleDateString()}</span>
+      </div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:12}}>
+        {series.map(s=><div key={s.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:"rgba(255,255,255,0.6)"}}><span style={{width:10,height:10,borderRadius:99,background:s.color,display:"inline-block"}}/>{s.name}</div>)}
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────
 export default function App(){
   const[user,setUser]=useState(null);const[appLoading,setAppLoading]=useState(true);
   const[tab,setTab]=useState("habits");
   const[habits,setHabits]=useState([]);const[friendData,setFriendData]=useState([]);const[myPosts,setMyPosts]=useState([]);
+  const[habitHistory,setHabitHistory]=useState({});const[selectedTrendHabit,setSelectedTrendHabit]=useState("all");
   const[showAdd,setShowAdd]=useState(false);const[newH,setNewH]=useState({name:"",icon:"⭐",priority:"medium"});
   const[viewPhotos,setViewPhotos]=useState(null);const[undoTarget,setUndoTarget]=useState(null);const[cameraFor,setCameraFor]=useState(null);
   const[showAddFriend,setShowAddFriend]=useState(false);const[commentPost,setCommentPost]=useState(null);
@@ -293,21 +332,32 @@ export default function App(){
   const[graveyard,setGraveyard]=useState([]);const[shameLog,setShameLog]=useState([]);
   const[goggins,setGoggins]=useState(null);const[gogginsKey,setGogginsKey]=useState(0);const[ramsay,setRamsay]=useState(null);const[bitchMsg,setBitchMsg]=useState(null);const[shameToast,setShameToast]=useState(null);const[toast,setToast]=useState(null);
   const[quoteIdx]=useState(()=>Math.floor(Math.random()*QUOTES.length));
+  const profileInputRef=useRef(null);
   const gogginsTimer=useRef(null);const ramsayTimer=useRef(null);const snapTimer=useRef(null);
   const habitsRef=useRef([]);const coachVisibleRef=useRef(null);
 
-  useEffect(()=>{(async()=>{const session=await dbGet("session");if(session){const u=await dbGet(`user:${session.username}`);if(u){setUser(u);setHabits(u.habits||DEFAULT_HABITS);setMyPosts(u.posts||[]);setGraveyard(u.graveyard||[]);setShameLog(u.shameLog||[]);await loadFriends(u);}}setAppLoading(false);})();},[]);
+  useEffect(()=>{(async()=>{const session=await dbGet("session");if(session){const u=await dbGet(`user:${session.username}`);if(u){setUser(u);setHabits(u.habits||DEFAULT_HABITS);setMyPosts(u.posts||[]);setGraveyard(u.graveyard||[]);setShameLog(u.shameLog||[]);setHabitHistory(u.habitHistory||{});await loadFriends(u);}}setAppLoading(false);})();},[]);
   useEffect(()=>{habitsRef.current=habits;},[habits]);
   useEffect(()=>{coachVisibleRef.current=goggins||ramsay?"busy":null;},[goggins,ramsay]);
+  useEffect(()=>{
+    if(selectedTrendHabit==="all")return;
+    const exists=habits.some(h=>String(h.id)===String(selectedTrendHabit));
+    if(!exists)setSelectedTrendHabit("all");
+  },[habits,selectedTrendHabit]);
 
   async function loadFriends(u){const fds=[];for(const fn of(u.friends||[])){const demo=DEMO_USERS.find(d=>d.username===fn);if(demo){fds.push({...demo,shamed:false});continue;}const fd=await dbGet(`user:${fn}`);if(fd)fds.push({...fd,shamed:false});}setFriendData(fds);}
 
-  async function handleAuth(u){setUser(u);setHabits(u.habits||DEFAULT_HABITS);setMyPosts(u.posts||[]);setGraveyard(u.graveyard||[]);setShameLog(u.shameLog||[]);await loadFriends(u);
+  async function handleAuth(u){setUser(u);setHabits(u.habits||DEFAULT_HABITS);setMyPosts(u.posts||[]);setGraveyard(u.graveyard||[]);setShameLog(u.shameLog||[]);setHabitHistory(u.habitHistory||{});await loadFriends(u);
     const dc=DAILY_CHALLENGES[new Date().getDay()%DAILY_CHALLENGES.length];setDailyChallenge(dc);
     snapTimer.current=setTimeout(()=>{const c=SNAP_CHALLENGES[Math.floor(Math.random()*SNAP_CHALLENGES.length)];setSnapAlert(c);},20000+Math.random()*40000);
   }
 
   async function saveUser(updates){const updated={...user,...updates};setUser(updated);await dbSet(`user:${user.username}`,updated);}
+  function appendHabitHistory(history,habitId,streak,done){
+    const key=String(habitId);
+    const entry={ts:new Date().toISOString(),streak:Math.max(0,streak||0),done:!!done};
+    return {...history,[key]:[...(history[key]||[]),entry]};
+  }
   async function addFriend(f){const nf=[...(user.friends||[]),f.username];await saveUser({friends:nf});setFriendData(prev=>[...prev,{...f,shamed:false}]);setShowAddFriend(false);setToast(`${f.displayName} added! They better be grinding. 👀`);}
 
   useEffect(()=>{
@@ -357,10 +407,16 @@ export default function App(){
     const lateMin=new Date().getHours()>=8?Math.floor(Math.random()*45):0;
     const post={id:`${user.username}-${Date.now()}`,habit:forSnap?(snapAlert?.task||"Snap Challenge"):habits.find(x=>x.id===id)?.name??"",icon:forSnap?(snapAlert?.icon||"⚡"):habits.find(x=>x.id===id)?.icon??"",time:new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}),lateMin,streak:forSnap?1:(habits.find(x=>x.id===id)?.streak||0)+1,backPhoto:back,frontPhoto:front,reactions:{"🔥":0,"💪":0,"👏":0,"❤️":0},myReaction:null,comments:[]};
     let updatedHabits=habits;
-    if(!forSnap)updatedHabits=habits.map(x=>x.id!==id?x:{...x,done:true,backPhoto:back,frontPhoto:front,streak:x.streak+1,best:Math.max(x.best,x.streak+1)});
+    let updatedHistory=habitHistory;
+    if(!forSnap){
+      updatedHabits=habits.map(x=>x.id!==id?x:{...x,done:true,backPhoto:back,frontPhoto:front,streak:x.streak+1,best:Math.max(x.best,x.streak+1)});
+      const h=updatedHabits.find(x=>x.id===id);
+      updatedHistory=appendHabitHistory(habitHistory,id,h?.streak||0,true);
+      setHabitHistory(updatedHistory);
+    }
     const updatedPosts=[post,...myPosts];
     setHabits(updatedHabits);setMyPosts(updatedPosts);
-    await saveUser({habits:updatedHabits,posts:updatedPosts});
+    await saveUser({habits:updatedHabits,posts:updatedPosts,habitHistory:updatedHistory});
     if(forSnap)setSnapAlert(null);else setCameraFor(null);
   }
 
@@ -370,19 +426,35 @@ export default function App(){
     const h=habits.find(x=>x.id===id);
     const newShame=[...(shameLog||[]),{name:h?.name,icon:h?.icon,date:new Date().toLocaleDateString(),streak:h?.streak||0}];
     const updatedHabits=habits.map(x=>x.id!==id?x:{...x,done:false,backPhoto:null,frontPhoto:null,streak:Math.max(0,x.streak-1)});
+    const undone=updatedHabits.find(x=>x.id===id);
+    const updatedHistory=appendHabitHistory(habitHistory,id,undone?.streak||0,false);
     const updatedPosts=myPosts.filter(p=>p.habit!==h?.name);
-    setHabits(updatedHabits);setMyPosts(updatedPosts);setShameLog(newShame);
-    await saveUser({habits:updatedHabits,posts:updatedPosts,shameLog:newShame});
+    setHabits(updatedHabits);setMyPosts(updatedPosts);setShameLog(newShame);setHabitHistory(updatedHistory);
+    await saveUser({habits:updatedHabits,posts:updatedPosts,shameLog:newShame,habitHistory:updatedHistory});
     setUndoTarget(null);
   }
 
   async function deleteHabit(id){
     const h=habits.find(x=>x.id===id);
-    const grave=[...(graveyard||[]),{id,name:h?.name,icon:h?.icon,streak:h?.streak||0,date:new Date().toLocaleDateString(),rip:"RIP"}];
+    const grave=[...(graveyard||[]),{id,name:h?.name,icon:h?.icon,priority:h?.priority||"medium",streak:h?.streak||0,best:h?.best||0,date:new Date().toLocaleDateString(),rip:"RIP"}];
     const updated=habits.filter(x=>x.id!==id);
     setHabits(updated);setGraveyard(grave);
     await saveUser({habits:updated,graveyard:grave});
     setToast(`${h?.icon} ${h?.name} has been laid to rest. RIP 🪦`);
+  }
+
+  async function restoreHabit(id){
+    const graveItem=(graveyard||[]).find(g=>g.id===id);
+    if(!graveItem)return;
+    const restored={id:Date.now(),name:graveItem.name,icon:graveItem.icon||"⭐",priority:graveItem.priority||"medium",streak:graveItem.streak||0,best:Math.max(graveItem.best||0,graveItem.streak||0),done:false,backPhoto:null,frontPhoto:null};
+    const updatedHabits=[...habits,restored];
+    const updatedGrave=(graveyard||[]).filter(g=>g.id!==id);
+    const prevHistory=habitHistory[String(id)]||[];
+    const updatedHistory={...habitHistory,[String(restored.id)]:prevHistory};
+    delete updatedHistory[String(id)];
+    setHabits(updatedHabits);setGraveyard(updatedGrave);setHabitHistory(updatedHistory);
+    await saveUser({habits:updatedHabits,graveyard:updatedGrave,habitHistory:updatedHistory});
+    setToast(`${graveItem.icon} ${graveItem.name} is back from the grave.`);
   }
 
   function reactFriend(uid,pid,emoji){setFriendData(prev=>prev.map(f=>f.username!==uid?f:{...f,posts:f.posts.map(p=>{if(p.id!==pid)return p;const was=p.myReaction===emoji;return{...p,myReaction:was?null:emoji,reactions:{...p.reactions,[emoji]:p.reactions[emoji]+(was?-1:1),...(p.myReaction&&!was?{[p.myReaction]:p.reactions[p.myReaction]-1}:{})}};})}));}
@@ -395,9 +467,21 @@ export default function App(){
     if(commentPost)setCommentPost(prev=>({...prev,comments:[...(prev.comments||[]),comment]}));
   }
 
-  async function addHabit(){if(!newH.name.trim())return;const h={id:Date.now(),name:newH.name,icon:newH.icon,priority:newH.priority,streak:0,best:0,done:false,backPhoto:null,frontPhoto:null};const updated=[...habits,h];setHabits(updated);await saveUser({habits:updated});setNewH({name:"",icon:"⭐",priority:"medium"});setShowAdd(false);}
+  async function addHabit(){if(!newH.name.trim())return;const h={id:Date.now(),name:newH.name,icon:newH.icon,priority:newH.priority,streak:0,best:0,done:false,backPhoto:null,frontPhoto:null};const updated=[...habits,h];const updatedHistory={...habitHistory,[String(h.id)]:[]};setHabits(updated);setHabitHistory(updatedHistory);await saveUser({habits:updated,habitHistory:updatedHistory});setNewH({name:"",icon:"⭐",priority:"medium"});setShowAdd(false);}
   function ringShame(f){setFriendData(prev=>prev.map(x=>x.username===f.username?{...x,shamed:true}:x));setShameToast(f.displayName);}
-  async function logout(){await dbSet("session",null);clearTimeout(gogginsTimer.current);clearTimeout(ramsayTimer.current);clearTimeout(snapTimer.current);setUser(null);setHabits([]);setMyPosts([]);setFriendData([]);}
+  async function updateAvatar(file){
+    if(!file)return;
+    if(!file.type.startsWith("image/")){setToast("Please choose an image file.");return;}
+    const reader=new FileReader();
+    reader.onload=async()=>{
+      const avatar=String(reader.result||"");
+      if(!avatar)return;
+      await saveUser({avatar});
+      setToast("Profile picture updated.");
+    };
+    reader.readAsDataURL(file);
+  }
+  async function logout(){await dbSet("session",null);clearTimeout(gogginsTimer.current);clearTimeout(ramsayTimer.current);clearTimeout(snapTimer.current);setUser(null);setHabits([]);setMyPosts([]);setFriendData([]);setHabitHistory({});setSelectedTrendHabit("all");}
 
   const allFeed=[
     ...myPosts.map(p=>({...p,uid:null,name:user?.displayName??"You",avatar:user?.avatar??"",isMe:true})),
@@ -430,10 +514,11 @@ export default function App(){
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
             <div><p style={{fontSize:11,letterSpacing:2,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:4}}>{today}</p><h1 style={{fontSize:28,fontWeight:900,letterSpacing:-1,background:ACCENT,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>HabitSnap</h1></div>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
-              <img src={user.avatar} style={{width:40,height:40,borderRadius:"50%",objectFit:"cover",border:"2px solid rgba(124,111,255,0.4)"}} alt=""/>
+              <img src={user.avatar} onClick={()=>profileInputRef.current?.click()} title="Change profile photo" style={{width:40,height:40,borderRadius:"50%",objectFit:"cover",border:"2px solid rgba(124,111,255,0.4)",cursor:"pointer"}} alt=""/>
               <button onClick={logout} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,padding:"6px 12px",color:"rgba(255,255,255,0.3)",fontSize:12,fontFamily:F,cursor:"pointer"}}>Out</button>
             </div>
           </div>
+          <input ref={profileInputRef} type="file" accept="image/*" capture="user" style={{display:"none"}} onChange={e=>{const file=e.target.files?.[0];updateAvatar(file);e.target.value="";}}/>
           <div className="glass" style={{borderRadius:18,padding:"13px 16px"}}>
             <p style={{fontSize:10,letterSpacing:2,color:"rgba(255,255,255,0.25)",textTransform:"uppercase",marginBottom:6,fontWeight:600}}>Daily Wisdom</p>
             <p style={{fontSize:13,color:"rgba(255,255,255,0.7)",lineHeight:1.6,fontStyle:"italic",fontWeight:300}}>"{QUOTES[quoteIdx]}"</p>
@@ -442,8 +527,8 @@ export default function App(){
 
         {/* TABS */}
         <div style={{display:"flex",padding:"0 16px",marginBottom:4,gap:3,overflowX:"auto"}}>
-          {[["habits","Habits"],["feed","Feed"],["friends","Friends 👥"],["leaderboard","🏆"],["graveyard","⚰️"]].map(([k,l])=>(
-            <button key={k} onClick={()=>setTab(k)} style={{flexShrink:0,padding:"10px 12px",background:tab===k?"rgba(124,111,255,0.15)":"none",border:tab===k?"1px solid rgba(124,111,255,0.3)":"1px solid transparent",borderRadius:12,color:tab===k?"#a78bfa":"rgba(255,255,255,0.3)",fontSize:12,fontWeight:tab===k?700:400,fontFamily:F,cursor:"pointer"}}>{l}</button>
+          {[["habits","Habits"],["feed","Feed"],["friends","Friends 👥"],["leaderboard","🏆"],["utvikling","Utvikling 📈"],["graveyard","⚰️ Graveyard"]].map(([k,l])=>(
+            <button key={k} onClick={()=>setTab(k)} style={{flexShrink:0,minWidth:98,padding:"10px 12px",background:tab===k?"rgba(124,111,255,0.15)":"none",border:tab===k?"1px solid rgba(124,111,255,0.3)":"1px solid transparent",borderRadius:12,color:tab===k?"#a78bfa":"rgba(255,255,255,0.3)",fontSize:12,fontWeight:tab===k?700:400,fontFamily:F,cursor:"pointer",textAlign:"center"}}>{l}</button>
           ))}
         </div>
 
@@ -565,6 +650,23 @@ export default function App(){
           </div>
         )}
 
+        {/* UTVIKLING */}
+        {tab==="utvikling"&&(
+          <div style={{padding:"16px 22px"}} className="fade-in">
+            <h2 style={{fontSize:22,fontWeight:900,letterSpacing:-0.5,marginBottom:4}}>Utvikling 📈</h2>
+            <p style={{fontSize:12,color:"rgba(255,255,255,0.25)",marginBottom:16,fontStyle:"italic"}}>Streak-utvikling over tid for rutinene dine.</p>
+            <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:8,marginBottom:12}}>
+              <button onClick={()=>setSelectedTrendHabit("all")} style={{flexShrink:0,padding:"8px 12px",borderRadius:12,border:`1px solid ${selectedTrendHabit==="all"?"rgba(124,111,255,0.5)":"rgba(255,255,255,0.1)"}`,background:selectedTrendHabit==="all"?"rgba(124,111,255,0.15)":"rgba(255,255,255,0.04)",color:selectedTrendHabit==="all"?"#a78bfa":"rgba(255,255,255,0.45)",fontSize:12,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Alle</button>
+              {habits.map(h=>(
+                <button key={h.id} onClick={()=>setSelectedTrendHabit(String(h.id))} style={{flexShrink:0,padding:"8px 12px",borderRadius:12,border:`1px solid ${String(selectedTrendHabit)===String(h.id)?"rgba(124,111,255,0.5)":"rgba(255,255,255,0.1)"}`,background:String(selectedTrendHabit)===String(h.id)?"rgba(124,111,255,0.15)":"rgba(255,255,255,0.04)",color:String(selectedTrendHabit)===String(h.id)?"#a78bfa":"rgba(255,255,255,0.45)",fontSize:12,fontWeight:700,fontFamily:F,cursor:"pointer"}}>
+                  {h.icon} {h.name}
+                </button>
+              ))}
+            </div>
+            <HabitProgressChart habits={habits} habitHistory={habitHistory} selectedId={selectedTrendHabit}/>
+          </div>
+        )}
+
         {/* GRAVEYARD */}
         {tab==="graveyard"&&(
           <div style={{padding:"16px 22px"}} className="fade-in">
@@ -594,6 +696,7 @@ export default function App(){
                       <div style={{fontSize:13,fontWeight:600,color:"rgba(255,255,255,0.7)",marginBottom:4}}>{g.icon} {g.name}</div>
                       <div style={{fontSize:10,color:"rgba(255,255,255,0.2)"}}>Streak: {g.streak}d</div>
                       <div style={{fontSize:10,color:"rgba(255,255,255,0.15)",marginTop:2}}>{g.date}</div>
+                      <button onClick={()=>restoreHabit(g.id)} style={{marginTop:10,background:"rgba(124,111,255,0.16)",border:"1px solid rgba(124,111,255,0.35)",borderRadius:10,padding:"7px 10px",color:"#c9bbff",fontSize:11,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Gjenopprett</button>
                     </div>
                   ))}
                 </div>
