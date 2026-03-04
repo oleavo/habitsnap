@@ -197,8 +197,57 @@ function SnapAlert({challenge,onDone,onSnap}){
 function DualCamera({habitName,onCapture,onClose}){
   const bvr=useRef(),fvr=useRef(),bcv=useRef(),fcv=useRef(),bst=useRef(),fst=useRef();
   const[ready,setReady]=useState(false);const[err,setErr]=useState(false);const[swapped,setSwapped]=useState(false);const[count,setCount]=useState(null);const[flash,setFlash]=useState(false);
-  useEffect(()=>{(async()=>{try{const[bs,fs]=await Promise.all([navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false}),navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false})]);bst.current=bs;fst.current=fs;if(bvr.current){bvr.current.srcObject=bs;await bvr.current.play();}if(fvr.current){fvr.current.srcObject=fs;await fvr.current.play();}setReady(true);}catch{setErr(true);}})();return()=>{bst.current?.getTracks().forEach(t=>t.stop());fst.current?.getTracks().forEach(t=>t.stop());};},[]);
-  function shoot(){setFlash(true);setTimeout(()=>setFlash(false),200);let b,f;if(err){b=UNSPLASH[Math.floor(Math.random()*UNSPLASH.length)];f=FRONT_AVATARS[Math.floor(Math.random()*FRONT_AVATARS.length)];}else{const cap=(v,c,w,h)=>{c.width=w;c.height=h;c.getContext("2d").drawImage(v,0,0,w,h);return c.toDataURL("image/jpeg",.85)};b=cap(bvr.current,bcv.current,1280,960);f=cap(fvr.current,fcv.current,640,480);}bst.current?.getTracks().forEach(t=>t.stop());fst.current?.getTracks().forEach(t=>t.stop());onCapture(b,f);}
+  useEffect(()=>{
+    let active=true;
+    const stopAll=()=>{
+      const streams=[bst.current,fst.current].filter(Boolean);
+      const seen=new Set();
+      streams.forEach(s=>s.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}}));
+    };
+    (async()=>{
+      try{
+        if(!navigator.mediaDevices?.getUserMedia)throw new Error("mediaDevices unavailable");
+        const fs=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false});
+        let bs=null;
+        try{
+          bs=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:"environment"}},audio:false});
+        }catch{
+          try{bs=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false});}catch{}
+        }
+        if(!bs)bs=fs;
+        if(!active){fs.getTracks().forEach(t=>t.stop());if(bs!==fs)bs.getTracks().forEach(t=>t.stop());return;}
+        bst.current=bs;fst.current=fs;
+        if(bvr.current){bvr.current.srcObject=bs;await bvr.current.play().catch(()=>{});}
+        if(fvr.current){fvr.current.srcObject=fs;await fvr.current.play().catch(()=>{});}
+        setReady(true);
+      }catch{
+        setErr(true);
+      }
+    })();
+    return()=>{active=false;stopAll();};
+  },[]);
+  function shoot(){
+    setFlash(true);setTimeout(()=>setFlash(false),200);let b,f;
+    const canCapture=!err&&bvr.current&&fvr.current&&bvr.current.videoWidth>0&&fvr.current.videoWidth>0;
+    if(!canCapture){
+      b=UNSPLASH[Math.floor(Math.random()*UNSPLASH.length)];
+      f=FRONT_AVATARS[Math.floor(Math.random()*FRONT_AVATARS.length)];
+    }else{
+      const cap=(v,c)=>{
+        c.width=v.videoWidth||1280;c.height=v.videoHeight||960;
+        const ctx=c.getContext("2d");
+        if(!ctx)return null;
+        ctx.drawImage(v,0,0,c.width,c.height);
+        return c.toDataURL("image/jpeg",.85);
+      };
+      b=cap(bvr.current,bcv.current)||UNSPLASH[Math.floor(Math.random()*UNSPLASH.length)];
+      f=cap(fvr.current,fcv.current)||FRONT_AVATARS[Math.floor(Math.random()*FRONT_AVATARS.length)];
+    }
+    const streams=[bst.current,fst.current].filter(Boolean);
+    const seen=new Set();
+    streams.forEach(s=>s.getTracks().forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);t.stop();}}));
+    onCapture(b,f);
+  }
   function startCountdown(){let c=3;setCount(c);const iv=setInterval(()=>{c--;if(c<=0){clearInterval(iv);setCount(null);shoot();}else setCount(c);},1000);}
   return(<div className="camera-modal">{flash&&<div style={{position:"absolute",inset:0,background:"#fff",zIndex:10,pointerEvents:"none"}}/>}{count&&<div style={{position:"absolute",inset:0,zIndex:9,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}><div style={{fontSize:96,fontWeight:900,color:"#fff",textShadow:"0 4px 24px rgba(0,0,0,0.8)"}}>{count}</div></div>}<div style={{padding:"52px 20px 12px",position:"absolute",top:0,left:0,right:0,zIndex:5,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(to bottom,rgba(0,0,0,0.6),transparent)"}}><button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,padding:"6px 14px",color:"#fff",fontSize:13,fontFamily:F,cursor:"pointer"}}>Cancel</button><div style={{fontSize:13,fontWeight:700,color:"#fff",textAlign:"center"}}><div>{habitName}</div>{err&&<div style={{fontSize:10,color:"rgba(255,255,255,0.5)",marginTop:2}}>demo mode</div>}</div><div style={{width:60}}/></div><div className="cam-preview">{!swapped?<video ref={bvr} className="cam-back" autoPlay playsInline muted/>:<video ref={fvr} className="cam-back" autoPlay playsInline muted style={{transform:"scaleX(-1)"}}/>}<div className="cam-front-pip" onClick={()=>setSwapped(s=>!s)}>{!swapped?<video ref={fvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover",transform:"scaleX(-1)"}}/>:<video ref={bvr} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>}</div>{!ready&&!err&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.7)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras...</div></div>}</div><canvas ref={bcv} style={{display:"none"}}/><canvas ref={fcv} style={{display:"none"}}/><div className="cam-controls"><button className="cam-side-btn" onClick={startCountdown}>⏱</button><button className="cam-shutter" onClick={shoot}/><button className="cam-side-btn" onClick={()=>setSwapped(s=>!s)}>🔄</button></div></div>);
 }
@@ -244,9 +293,12 @@ export default function App(){
   const[graveyard,setGraveyard]=useState([]);const[shameLog,setShameLog]=useState([]);
   const[goggins,setGoggins]=useState(null);const[gogginsKey,setGogginsKey]=useState(0);const[ramsay,setRamsay]=useState(null);const[bitchMsg,setBitchMsg]=useState(null);const[shameToast,setShameToast]=useState(null);const[toast,setToast]=useState(null);
   const[quoteIdx]=useState(()=>Math.floor(Math.random()*QUOTES.length));
-  const gogginsTimer=useRef(null);const snapTimer=useRef(null);
+  const gogginsTimer=useRef(null);const ramsayTimer=useRef(null);const snapTimer=useRef(null);
+  const habitsRef=useRef([]);const coachVisibleRef=useRef(null);
 
   useEffect(()=>{(async()=>{const session=await dbGet("session");if(session){const u=await dbGet(`user:${session.username}`);if(u){setUser(u);setHabits(u.habits||DEFAULT_HABITS);setMyPosts(u.posts||[]);setGraveyard(u.graveyard||[]);setShameLog(u.shameLog||[]);await loadFriends(u);}}setAppLoading(false);})();},[]);
+  useEffect(()=>{habitsRef.current=habits;},[habits]);
+  useEffect(()=>{coachVisibleRef.current=goggins||ramsay?"busy":null;},[goggins,ramsay]);
 
   async function loadFriends(u){const fds=[];for(const fn of(u.friends||[])){const demo=DEMO_USERS.find(d=>d.username===fn);if(demo){fds.push({...demo,shamed:false});continue;}const fd=await dbGet(`user:${fn}`);if(fd)fds.push({...fd,shamed:false});}setFriendData(fds);}
 
@@ -258,8 +310,37 @@ export default function App(){
   async function saveUser(updates){const updated={...user,...updates};setUser(updated);await dbSet(`user:${user.username}`,updated);}
   async function addFriend(f){const nf=[...(user.friends||[]),f.username];await saveUser({friends:nf});setFriendData(prev=>[...prev,{...f,shamed:false}]);setShowAddFriend(false);setToast(`${f.displayName} added! They better be grinding. 👀`);}
 
-  useEffect(()=>{if(!user)return;function schedule(){gogginsTimer.current=setTimeout(()=>{setGoggins(GOGGINS[Math.floor(Math.random()*GOGGINS.length)]);setGogginsKey(k=>k+1);schedule();},18000+Math.random()*20000);}gogginsTimer.current=setTimeout(()=>{setGoggins(GOGGINS[0]);setGogginsKey(k=>k+1);schedule();},6000);return()=>clearTimeout(gogginsTimer.current);},[user]);
-  useEffect(()=>{if(!user)return;const h=new Date().getHours();if(h>=12){const undone=habits.filter(x=>!x.done);if(undone.length>0){const t=setTimeout(()=>setRamsay(undone[Math.floor(Math.random()*undone.length)].name),10000);return()=>clearTimeout(t);}};},[user]);
+  useEffect(()=>{
+    if(!user)return;
+    const cooldown=10*60*1000;
+    function schedule(){
+      gogginsTimer.current=setTimeout(()=>{
+        if(!coachVisibleRef.current){
+          setGoggins(GOGGINS[Math.floor(Math.random()*GOGGINS.length)]);
+          setGogginsKey(k=>k+1);
+        }
+        schedule();
+      },cooldown);
+    }
+    schedule();
+    return()=>clearTimeout(gogginsTimer.current);
+  },[user]);
+  useEffect(()=>{
+    if(!user)return;
+    const cooldown=10*60*1000;
+    function schedule(delay){
+      ramsayTimer.current=setTimeout(()=>{
+        const hour=new Date().getHours();
+        const undone=habitsRef.current.filter(x=>!x.done);
+        if(hour>=12&&undone.length>0&&!coachVisibleRef.current){
+          setRamsay(undone[Math.floor(Math.random()*undone.length)].name);
+        }
+        schedule(cooldown);
+      },delay);
+    }
+    schedule(5*60*1000);
+    return()=>clearTimeout(ramsayTimer.current);
+  },[user]);
 
   const sorted=[...habits].sort((a,b)=>P_ORDER[a.priority]-P_ORDER[b.priority]);
   const done=habits.filter(h=>h.done).length;const pct=habits.length?(done/habits.length)*100:0;
@@ -316,7 +397,7 @@ export default function App(){
 
   async function addHabit(){if(!newH.name.trim())return;const h={id:Date.now(),name:newH.name,icon:newH.icon,priority:newH.priority,streak:0,best:0,done:false,backPhoto:null,frontPhoto:null};const updated=[...habits,h];setHabits(updated);await saveUser({habits:updated});setNewH({name:"",icon:"⭐",priority:"medium"});setShowAdd(false);}
   function ringShame(f){setFriendData(prev=>prev.map(x=>x.username===f.username?{...x,shamed:true}:x));setShameToast(f.displayName);}
-  async function logout(){await dbSet("session",null);clearTimeout(gogginsTimer.current);clearTimeout(snapTimer.current);setUser(null);setHabits([]);setMyPosts([]);setFriendData([]);}
+  async function logout(){await dbSet("session",null);clearTimeout(gogginsTimer.current);clearTimeout(ramsayTimer.current);clearTimeout(snapTimer.current);setUser(null);setHabits([]);setMyPosts([]);setFriendData([]);}
 
   const allFeed=[
     ...myPosts.map(p=>({...p,uid:null,name:user?.displayName??"You",avatar:user?.avatar??"",isMe:true})),
@@ -384,7 +465,7 @@ export default function App(){
             )}
             <div className="glass" style={{borderRadius:22,padding:"20px 22px",marginBottom:18}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:14}}>
-                <div><span style={{fontSize:13,fontWeight:600,color:"rgba(255,255,255,0.5)",letterSpacing:0.5,display:"block",marginBottom:2}}>PROGRESS</span><span style={{fontSize:12,color:"rgba(255,255,255,0.25)"}}>hey {user.displayName}, don't be a loser today</span></div>
+                <div><span style={{fontSize:13,fontWeight:600,color:"rgba(255,255,255,0.5)",letterSpacing:0.5,display:"block",marginBottom:2}}>PROGRESS</span><span style={{fontSize:12,color:"rgba(255,255,255,0.25)"}}>Hey {user.displayName}, don't be a loser today</span></div>
                 <span style={{fontSize:24,fontWeight:900,letterSpacing:-1}}>{done}<span style={{fontSize:14,fontWeight:400,color:"rgba(255,255,255,0.3)"}}>/{habits.length}</span></span>
               </div>
               <div style={{background:"rgba(255,255,255,0.06)",borderRadius:99,height:6,marginBottom:14,overflow:"hidden"}}><div style={{background:done===habits.length?"linear-gradient(90deg,#00d2a8,#0be881)":ACCENT,borderRadius:99,height:6,width:`${pct}%`,transition:"width .7s cubic-bezier(.4,0,.2,1)"}}/></div>
