@@ -249,25 +249,26 @@ function DualCamera({habitName,onCapture,onClose}){
     cancelRef.current=false;stopAll();setMode("starting");setLiveSwap(false);setErrMsg("");
     try{
       if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera not supported.");
+      // Get permission first so device labels populate
       const seed=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
       seed.getTracks().forEach(t=>t.stop());
       if(cancelRef.current)return;
-      const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
-      const fDev=devs.find(d=>/front|user|facetime/i.test(d.label||""))||null;
-      const bDev=devs.find(d=>/back|rear|environment/i.test(d.label||""))||devs.find(d=>d.deviceId!==fDev?.deviceId)||null;
-      if(fDev&&bDev&&fDev.deviceId!==bDev.deviceId){
-        try{
-          const[fs,bs]=await Promise.all([
-            navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:fDev.deviceId}},audio:false}),
-            navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:bDev.deviceId}},audio:false}),
-          ]);
-          if(cancelRef.current){fs.getTracks().forEach(t=>t.stop());bs.getTracks().forEach(t=>t.stop());return;}
-          sBig.current=bs;sPip.current=fs;
-          await bindV(bigVRef.current,bs,false);
-          await bindV(pipVRef.current,fs,true);
-          setIsDual(true);setMode("live");return;
-        }catch{}
+      // Open front + back sequentially with exact facingMode (most reliable cross-platform)
+      let frontStream=null,backStream=null;
+      try{frontStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:"user"}},audio:false});}catch{}
+      if(cancelRef.current){frontStream?.getTracks().forEach(t=>t.stop());return;}
+      try{backStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:"environment"}},audio:false});}catch{}
+      if(cancelRef.current){frontStream?.getTracks().forEach(t=>t.stop());backStream?.getTracks().forEach(t=>t.stop());return;}
+      if(frontStream&&backStream){
+        sBig.current=backStream;sPip.current=frontStream;
+        // pip video is always rendered, so pipVRef.current is valid
+        await bindV(bigVRef.current,backStream,false);
+        await bindV(pipVRef.current,frontStream,true);
+        setIsDual(true);setMode("live");return;
       }
+      // One or both failed — single camera fallback
+      frontStream?.getTracks().forEach(t=>t.stop());
+      backStream?.getTracks().forEach(t=>t.stop());
       if(cancelRef.current)return;
       const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});
       if(cancelRef.current){s.getTracks().forEach(t=>t.stop());return;}
@@ -347,15 +348,16 @@ function DualCamera({habitName,onCapture,onClose}){
         <div style={{width:80}}/>
       </div>
 
-      {/* Live camera preview — always mounted so refs stay valid */}
+      {/* Live camera preview */}
       <div className="cam-preview" style={{display:mode==="captured"?"none":undefined}}>
         <video ref={bigVRef} className="cam-back" autoPlay playsInline muted/>
-        {isDual&&mode==="live"&&(
-          <div className="cam-front-pip" style={{cursor:"pointer"}} onClick={()=>setLiveSwap(s=>!s)}>
-            <video ref={pipVRef} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>
-            <div style={{position:"absolute",bottom:5,right:5,background:"rgba(0,0,0,0.5)",borderRadius:99,padding:"2px 7px",fontSize:9,color:"rgba(255,255,255,0.8)"}}>tap to swap</div>
-          </div>
-        )}
+        {/* PiP always in DOM so pipVRef is always valid — hidden when not dual */}
+        <div className="cam-front-pip"
+          onClick={()=>isDual&&mode==="live"&&setLiveSwap(s=>!s)}
+          style={{cursor:isDual&&mode==="live"?"pointer":"default",opacity:isDual&&mode==="live"?1:0,pointerEvents:isDual&&mode==="live"?"auto":"none"}}>
+          <video ref={pipVRef} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+          <div style={{position:"absolute",bottom:5,right:5,background:"rgba(0,0,0,0.55)",borderRadius:99,padding:"2px 7px",fontSize:9,color:"#fff"}}>tap to swap</div>
+        </div>
         {mode==="starting"&&!errMsg&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.8)"}}><div style={{fontSize:14,color:"rgba(255,255,255,0.5)"}}>Starting cameras…</div></div>}
         {errMsg&&<div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.85)",gap:12}}><div style={{fontSize:40}}>📷</div><div style={{fontSize:13,color:"rgba(255,120,120,0.9)",textAlign:"center",padding:"0 24px"}}>{errMsg}</div><button onClick={initCam} style={{background:ACCENT,border:"none",borderRadius:12,padding:"10px 20px",color:"#fff",fontSize:13,fontWeight:700,fontFamily:F,cursor:"pointer"}}>Try again</button></div>}
       </div>
